@@ -1,0 +1,76 @@
+Seq Accuracy: 1.517927244176917, Loss: nan
+Seq Accuracy: 1.517927244176917, Loss: nan
+Seq Accuracy: 5.783826223501701, Loss: nan
+Seq Accuracy: 43.39178225595394, Loss: nan
+Seq Accuracy: 51.68803978016226, Loss: nan
+Seq Accuracy: 47.867050510337606, Loss: nan
+
+Seq Accuracy: 1.7534676786181629, Loss: nan
+Seq Accuracy: 6.96152839570793, Loss: nan
+Seq Accuracy: 43.65349384977755, Loss: nan
+Seq Accuracy: 52.132949489662394, Loss: nan
+Seq Accuracy: 49.56817587019105, Loss: nan
+Seq Accuracy: 53.938759487045274, Loss: nan
+Seq Accuracy: 55.63988484689872, Loss: nan
+Seq Accuracy: 55.92776760010469, Loss: nan
+
+Seq Accuracy: 1.020675215912065, Loss: nan
+Seq Accuracy: 3.1667102852656375, Loss: nan
+Seq Accuracy: 45.53781732530751, Loss: nan
+Seq Accuracy: 54.35749803716305, Loss: nan
+Seq Accuracy: 54.17429992148652, Loss: nan
+Seq Accuracy: 56.477361947134256, Loss: nan
+Seq Accuracy: 57.41952368489924, Loss: nan
+Seq Accuracy: 57.70740643810521, Loss: nan
+Seq Accuracy: 57.73357759748757, Loss: nan
+Seq Accuracy: 57.83826223501701, Loss: nan
+Seq Accuracy: 57.91677571316409, Loss: nan
+
+Seq Accuracy: 1.151531012823868, Loss: nan
+Seq Accuracy: 2.7218005757655064, Loss: nan
+Seq Accuracy: 36.0376864695106, Loss: nan
+Seq Accuracy: 50.641193404867835, Loss: nan
+Seq Accuracy: 50.69353572363256, Loss: nan
+Seq Accuracy: 51.086103114367965, Loss: nan
+Seq Accuracy: 51.32164354880921, Loss: nan
+Seq Accuracy: 51.7927244176917, Loss: nan
+
+Seq Accuracy: 1.3870714472651138, Loss: nan
+
+Seq Accuracy: 2.407746663177179, Loss: nan
+Seq Accuracy: 4.606124051295472, Loss: nan
+Seq Accuracy: 39.492279507982204, Loss: nan
+Seq Accuracy: 50.562679926720755, Loss: nan
+Seq Accuracy: 52.55168803978016, Loss: nan
+Seq Accuracy: 53.75556137136875, Loss: nan
+Seq Accuracy: 53.258309343103896, Loss: nan
+Seq Accuracy: 54.40984035592777, Loss: nan
+Seq Accuracy: 54.80240774666318, Loss: nan
+Seq Accuracy: 54.9856058623397, Loss: nan
+
+Seq Accuracy: 0.8898194190002617, Loss: nan
+Seq Accuracy: 3.611619994765768, Loss: nan
+Seq Accuracy: 44.517142109395444, Loss: nan
+Seq Accuracy: 54.56686731222193, Loss: nan
+
+Seq Accuracy: 0.9683328971473436, Loss: nan
+Seq Accuracy: 5.574456948442816, Loss: nan
+Seq Accuracy: 45.2761057314839, Loss: nan
+Seq Accuracy: 44.2816016749542, Loss: nan
+Seq Accuracy: 46.76786181627846, Loss: nan
+Seq Accuracy: 48.41664485736718, Loss: nan
+
+Seq Accuracy: 3.2190526040303586, Loss: nan
+Seq Accuracy: 4.658466370060194, Loss: nan
+Seq Accuracy: 42.73750327139492, Loss: nan
+Seq Accuracy: 54.7238942685161, Loss: nan
+Seq Accuracy: 54.9856058623397, Loss: nan
+Seq Accuracy: 55.24731745616331, Loss: nan
+
+Seq Accuracy: 2.2768908662653757, Loss: nan
+Seq Accuracy: 2.6956294163831456, Loss: nan
+Seq Accuracy: 40.669981680188435, Loss: nan
+Seq Accuracy: 54.7238942685161, Loss: nan
+Seq Accuracy: 52.15912064904475, Loss: nan
+Seq Accuracy: 53.546192096309866, Loss: nan
+
