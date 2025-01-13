@@ -1,11 +1,11 @@
 export WORK_SPACE="/home/coder/project"
-export OUTPUT_DIR="/home/coder/project/dse/data/downstream_data"
+export OUTPUT_DIR="/home/coder/project/dse/data/_downstream_data"
 
 
 echo "1. Install ParlAi Package"
 
 cd $WORK_SPACE
-git clone https://github.com/facebookresearch/ParlAI.git 
+# git clone https://github.com/facebookresearch/ParlAI.git 
 cd ParlAI; python setup.py develop
 
 
@@ -19,5 +19,5 @@ parlai convert_to_parlai --task dstc7 --datatype valid --outfile ubuntu_valid.tx
 
 # echo "3. Use our scripts to generate evaluation data"
 
-# python data/process_evaluate.py --output_dir $OUTPUT_DIR --task amazonqa
-# python data/process_evaluate.py --output_dir $OUTPUT_DIR --task ubuntu
+# python /home/coder/project/dse/data/process_evaluate.py --output_dir $OUTPUT_DIR --task amazonqa
+# python /home/coder/project/dse/data/process_evaluate.py --output_dir $OUTPUT_DIR --task ubuntu

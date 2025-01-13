@@ -5,19 +5,64 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import MultiheadAttention
+from transformers import AutoTokenizer
 
 from transformers import BertModel, BertPreTrainedModel, DistilBertPreTrainedModel, DistilBertModel
 #для hf моделей
 from transformers import AutoModel, PreTrainedModel
 
+from transformers.modeling_outputs import BaseModelOutputWithPooling
+
+
+def generate_dataset_embeddings(dataset_texts, batch_size=32):
+    """
+    Генерация dataset_embeddings на основе представленного корпуса.
+    """
+    # Определение устройства
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    
+    # Загрузка токенизатора и модели, перемещение модели на устройство
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+    encoder = AutoModel.from_pretrained('jxm/cde-small-v1', trust_remote_code=True).to(device)
+    
+    # Токенизация текстов и перемещение на устройство
+    dataset_texts = tokenizer(
+        ["search_document: " + text for text in dataset_texts],
+        return_tensors='pt', 
+        is_split_into_words=False,
+        padding='longest', 
+        truncation=True, 
+        max_length=64
+    ).to(device)
+
+    # Инициализация списка для эмбеддингов
+    dataset_embeddings = []
+    
+    # Генерация эмбеддингов
+    for i in range(0, len(dataset_texts["input_ids"]), batch_size):
+        # Формирование батча и перемещение на устройство
+        batch = {k: v[i:i+batch_size] for k, v in dataset_texts.items()}
+        
+        # Без вычисления градиентов
+        with torch.no_grad():
+            # Генерация эмбеддингов для текущего батча
+            embeddings = encoder.first_stage_model(**batch)
+            dataset_embeddings.append(embeddings.to(device))
+
+    # Конкатенация эмбеддингов в один тензор
+    dataset_embeddings = torch.cat(dataset_embeddings).to(device)
+    return dataset_embeddings
+
+
 
 class GeneralModelForSequenceClassification(PreTrainedModel):
-    def __init__(self, config, model_name, weights, pooling="average"):
+    def __init__(self, config, model_name, weights, pooling="average", train_dataset=None):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.weights = weights
         self.pooling = pooling
         self.model_name = model_name
+        self.train_dataset = train_dataset
 
         self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True)
         self.dropout = nn.Dropout(0.1)
@@ -47,12 +92,21 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
                             return_dict=return_dict
                             )
         elif self.model_name == "jxm/cde-small-v1":
-            outputs = self.encoder(input_ids,
+            pooled_output = self.encoder.second_stage_model(input_ids, #second_stage_model
                                 attention_mask=attention_mask,
-                                dataset_input_ids = input_ids,
-                                #dataset_attention_mask=attention_mask,
-                                output_hidden_states=output_hidden_states
+                                #dataset_input_ids = None,
+                                #dataset_attention_mask = None,
+                                #'dataset_input_ids' and 'dataset_attention_mask
+                                dataset_embeddings=generate_dataset_embeddings(self.train_dataset),
                                 )
+
+            # print(outputs)
+            # exit()
+            outputs = BaseModelOutputWithPooling(
+                last_hidden_state=None,
+                pooler_output=pooled_output
+            )
+            #torch.Size([64, 768])
         else:
             outputs = self.encoder(input_ids,
                                 attention_mask=attention_mask,
@@ -64,20 +118,25 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
                                 output_hidden_states=output_hidden_states,
                                 return_dict=return_dict
                                 )
+            #torch.Size([77, 64, 1024])
+        
+        if self.model_name != "jxm/cde-small-v1":
+            if self.pooling == "average":
+                attention_mask = attention_mask.unsqueeze(-1)
+                pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+            elif self.pooling == "cls_nopool":
+                pooled_output = outputs[0][:, 0, :]
+            elif self.pooling == "cls":
+                pooled_output = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
+            else:
+                raise ValueError("Choose args.pooling from ['cls', 'cls_nopool', 'average']")
 
-        if self.pooling == "average":
-            attention_mask = attention_mask.unsqueeze(-1)
-            pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
-        elif self.pooling == "cls_nopool":
-            pooled_output = outputs[0][:, 0, :]
-        elif self.pooling == "cls":
-            pooled_output = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
-        else:
-            raise ValueError("Choose args.pooling from ['cls', 'cls_nopool', 'average']")
-
-        pooled_output = self.dropout(pooled_output)
-        pooled_output = pooled_output.to(torch.float32)
+            pooled_output = self.dropout(pooled_output)
+            pooled_output = pooled_output.to(torch.float32)
+        # print(pooled_output.shape)
         seq_logits = self.classifier(pooled_output)
+
+        # print(outputs)
 
         outputs = (seq_logits,) + outputs[2:] 
         if labels is not None:

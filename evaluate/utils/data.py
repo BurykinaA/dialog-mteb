@@ -261,7 +261,7 @@ def get_intent_slot_dataset(BERT_MODEL="bert-base-uncased", data_path="data/atis
     val_dataset = SingleSetenceDataset(val_encodings, val_seq_labels, val_ner_labels)
     test_dataset = SingleSetenceDataset(test_encodings, test_seq_labels, test_ner_labels)
 
-    return train_dataset, test_dataset, val_dataset, len(unique_seq_labels), torch.ones([len(unique_seq_labels)])
+    return train_dataset, test_dataset, val_dataset, len(unique_seq_labels), torch.ones([len(unique_seq_labels)]), train_text
     
 
 
