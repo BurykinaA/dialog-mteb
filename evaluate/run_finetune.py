@@ -316,6 +316,7 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
                         best_metric = val_metric
                         test_metric_with_best_valid, _ = evaluate(test_dataset, model, args, prefix="Test")
                         model_to_save = deepcopy(model.module) if hasattr(model, "module") else deepcopy(model)
+                        logger.info(f'AAAAAAAAAAAAAAAAAAAA model_to_save {model_to_save}')
 
                 elif args.early_stop_type == "loss":
                     if val_loss >= best_loss:
@@ -346,6 +347,7 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
 
         if early_stop_count > args.patience:
             logger.info("Early Stopped!")
+            logger.info(f'model_to_save {model_to_save}')
             break
 
 
@@ -363,7 +365,10 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
         elif args.TASK == 'rs':
             f.write('Recall@ 1: %.4f, 3: %.4f, 5: %.4f, 10: %.4f \n' % (test_metric_with_best_valid['recall_1'], test_metric_with_best_valid['recall_3'], test_metric_with_best_valid['recall_5'], test_metric_with_best_valid['recall_10']))
         else:
-            f.write("%5f \n" % (test_metric_with_best_valid['main']))
+            try:
+                f.write("%5f \n" % (test_metric_with_best_valid['main']))
+            except:
+                print(test_metric_with_best_valid)
 
     
     return test_metric_with_best_valid, model_to_save
@@ -508,7 +513,7 @@ def main():
     logger.info('Processing and loading data')
 
     # добавила сюда свои модели
-    def load_model(args, num_seq_label, weights=None):
+    def load_model(args, num_seq_label, weights=None, train_dataset=None):
         def get_model_class(args):
             if args.TASK in ['seq', 'oos']:
                 if 'distil' in args.model_type:
@@ -557,7 +562,7 @@ def main():
             if 'bert' in args.model_type:
                 model = MODEL_CLASS.from_pretrained(args.model_type, config=config, weights=weights, pooling=args.classification_pooling)
             else:
-                model = MODEL_CLASS.from_pretrained(args.model_type, config=config, model_name=args.model_type, weights=weights, pooling=args.classification_pooling)
+                model = MODEL_CLASS.from_pretrained(args.model_type, config=config, model_name=args.model_type, weights=weights, pooling=args.classification_pooling, train_dataset=train_dataset)
         print('model', model)
         print('--------------')
         return model
@@ -578,11 +583,11 @@ def main():
             train_dataset, test_dataset, val_dataset, num_seq_label, weights = get_nli_dataset(BERT_MODEL=args.model_type, file_path=args.data_dir, max_seq_length=args.max_seq_length)
             model = load_model(args, num_seq_label, weights=weights)
         else:
-            train_dataset, test_dataset, val_dataset, num_seq_label, weights = get_intent_slot_dataset(BERT_MODEL=args.model_type, 
+            train_dataset, test_dataset, val_dataset, num_seq_label, weights, _ = get_intent_slot_dataset(BERT_MODEL=args.model_type, 
                                                                                                                     max_seq_length=args.max_seq_length, data_path=args.data_dir, 
                                                                                                                     TASK=args.TASK)
             weights = weights.to(args.device)
-            model = load_model(args, num_seq_label, weights)
+            model = load_model(args, num_seq_label, weights, train_dataset)
 
         test_metric_with_best_valid = train(args, model, train_dataset, val_dataset, test_dataset)
 
@@ -617,9 +622,9 @@ def main():
                 train_dataset, test_dataset, val_dataset, num_seq_label, weights = get_nli_dataset(BERT_MODEL=args.model_type, file_path=DATA_DIR, max_seq_length=args.max_seq_length)
                 model = load_model(args, num_seq_label, weights=weights)
             elif args.TASK in ['seq', 'oos']:
-                train_dataset, test_dataset, val_dataset, num_seq_label, weights = get_intent_slot_dataset(BERT_MODEL=args.model_type, max_seq_length=args.max_seq_length, data_path=DATA_DIR, TASK=args.TASK)
+                train_dataset, test_dataset, val_dataset, num_seq_label, weights, train_text = get_intent_slot_dataset(BERT_MODEL=args.model_type, max_seq_length=args.max_seq_length, data_path=DATA_DIR, TASK=args.TASK)
                 weights = weights.to(args.device)
-                model = load_model(args, num_seq_label, weights)
+                model = load_model(args, num_seq_label, weights, train_text)
             else:
                 raise ValueError("Please choose task from ['seq', 'oos', 'nli', 'da', 'rs']")
             
