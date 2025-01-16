@@ -298,7 +298,12 @@ def _read_data_response_selection(file_path):
 
     test_file = open(os.path.join(test_file_path, "test.txt"), "r")
     test_reader = csv.reader(test_file, delimiter="\t")
-    all_data = list(test_reader)[:780000]
+    all_data = list(test_reader)
+
+    if 'amazonqa' in file_path:
+        random.seed(42)
+        selected_indices = random.sample(range(len(all_data)), 780000)
+        all_data = [all_data[i] for i in selected_indices]
     
     # Calculate split indices for 70/10/20 split
     total_samples = len(all_data)

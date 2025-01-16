@@ -31,7 +31,7 @@ OUTPUT_DIR=$3
 
 
 
-response selection
+#response selection
 for data_ratio in 500 1000 
 do
     python evaluate/run_finetune.py \
@@ -42,7 +42,7 @@ do
         --bert_lr 3e-5 \
         --epoch 50 \
         --max_seq_length 128 \
-        --per_gpu_batch_size 8 \
+        --per_gpu_batch_size 64 \
         --gradient_accumulation_steps 1 \
         --data_ratio ${data_ratio} \
         --num_runs 5 \

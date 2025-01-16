@@ -1,4 +1,12 @@
-# DSE: Learning Dialogue Representations from Consecutive Utterances
+# My notes 
+
+to evaluate models
+run:  evaluate/scripts/ft.sh 'dunzhang/stella_en_400M_v5' 'data/_downstream_data' 'metrics'
+
+
+
+
+# comment DSE notes: Learning Dialogue Representations from Consecutive Utterances
 
 
 This repository contains the code for our paper
