@@ -3,6 +3,13 @@
 to evaluate models
 run:  evaluate/scripts/ft.sh 'dunzhang/stella_en_400M_v5' 'data/_downstream_data' 'metrics'
 
+dunzhang/stella_en_400M_v5
+jinaai/jina-embeddings-v3
+Alibaba-NLP/gte-large-en-v1.5
+jxm/cde-small-v1
+HIT-TMG/KaLM-embedding-multilingual-mini-instruct-v1
+
+evaluate/scripts/ft.sh 'dunzhang/stella_en_400M_v5' 'data/_downstream_data' 'metrics'
 
 
 
