@@ -39,7 +39,7 @@ do
         --model_type ${MODEL_DIR} \
         --TASK rs \
         --output_dir ${OUTPUT_DIR}/rs_ft/${MODEL_DIR}/amazonqa/${data_ratio} \
-        --bert_lr 3e-5 \
+        --bert_lr 1e-3 \
         --epoch 50 \
         --max_seq_length 128 \
         --per_gpu_batch_size 64 \

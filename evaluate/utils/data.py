@@ -300,13 +300,12 @@ def _read_data_response_selection(file_path):
     test_reader = csv.reader(test_file, delimiter="\t")
     all_data = list(test_reader)
 
-    # if 'amazonqa' in file_path:
-    #     random.seed(42)
-    #     selected_indices = random.sample(range(len(all_data)), 780000)
-    #     all_data = [all_data[i] for i in selected_indices]
+    if 'amazonqa' in file_path:
+        all_data = all_data[:50000]
     
     # Calculate split indices for 50/20/30 split
     total_samples = len(all_data)
+    print('Total len of data:', total_samples)
     train_size = int(0.5 * total_samples)
     val_size = int(0.2 * total_samples)
     
