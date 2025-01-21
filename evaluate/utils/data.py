@@ -359,7 +359,11 @@ def _tokenize_multiturn_dialogue_concatenate(raw_text, tokenizer, max_seq_len, c
 
 
 def get_dialogue_action_dataset(BERT_MODEL="bert-base-uncased", file_path="", max_seq_length=32, concatenate=False, num_turn=2):
-    tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL)
+    print(f'BERT_MODEL {BERT_MODEL}')
+    if BERT_MODEL == 'jxm/cde-small-v1':
+        tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL)
     change_usrsys_to_sep_token = True if "todbert" not in BERT_MODEL.lower() else False
 
 
