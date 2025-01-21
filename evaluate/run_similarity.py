@@ -333,6 +333,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()    
 
+    print(f'args.output_dir {args.output_dir}')
+
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)        
 
@@ -342,7 +344,7 @@ if __name__ == "__main__":
         args.embedding_type = "dialogpt_embedding"
 
     args.model_dir = args.model_dir.replace("//","/")
-    model = AutoModel.from_pretrained(args.model_dir)
+    model = AutoModel.from_pretrained(args.model_dir, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, use_fast=True)
     if tokenizer.pad_token == None:
         tokenizer.pad_token = tokenizer.eos_token
