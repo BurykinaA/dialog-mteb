@@ -32,3 +32,6 @@ ParlAI
 !data/_downstream_data/rs/amazonqa/test.txt
 !metrics/
 !metricsrm/
+
+metrics/**/*
+metricsrm/**/*
