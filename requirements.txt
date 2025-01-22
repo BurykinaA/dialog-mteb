@@ -1,7 +1,0 @@
-transformers
-sentence-transformers
-numpy
-scikit-learn
-tensorboardX
-pytorch-nlp
-datasets
