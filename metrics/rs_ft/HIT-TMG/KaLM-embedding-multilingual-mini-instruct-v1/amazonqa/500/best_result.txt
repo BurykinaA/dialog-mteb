@@ -1,0 +1,6 @@
+Recall@ 1: 6.1000, 3: 13.3600, 5: 18.3400, 10: 27.9400 
+Recall@ 1: 6.1000, 3: 13.3600, 5: 18.3400, 10: 27.9400 
+Average Recall@1: 6.100000 
+Average Recall@3: 13.360000 
+Average Recall@5: 18.340000 
+Average Recall@10: 27.940000 

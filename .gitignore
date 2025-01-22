@@ -27,11 +27,5 @@ Miniconda3-latest-Linux-x86_64.sh
 
 *.txt
 
-ParlAI
-
-!data/_downstream_data/rs/amazonqa/test.txt
-!metrics/
-!metricsrm/
-
-metrics/**/*
-metricsrm/**/*
+!metrics/**/*.txt
+!metricsrm/**/*.txt
