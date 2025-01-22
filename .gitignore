@@ -1,0 +1,36 @@
+*~
+*#
+*.swp
+
+*.ipynb_checkpoints/
+*.DS_Store
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+/.coverage
+/.coverage.*
+/.cache
+/.pytest_cache
+/.mypy_cache
+
+/doc/_apidoc/
+/build
+*snips_train.json
+*snips_test.json
+*.csv
+data/_downstream_data
+Miniconda3-latest-Linux-x86_64.sh
+Miniconda3-latest-Linux-x86_64.sh
+
+*.txt
+
+# Исключение для папок metrics и metricsrm
+# !metrics/
+# !metricsrm/
+
+ParlAI
+
+!data/_downstream_data/rs/amazonqa/test.txt
