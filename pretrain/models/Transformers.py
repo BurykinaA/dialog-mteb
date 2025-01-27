@@ -7,6 +7,79 @@ from torch.nn import Parameter, MultiheadAttention
 from transformers import BertPreTrainedModel, BertModel, RobertaPreTrainedModel, RobertaModel, DistilBertPreTrainedModel, DistilBertModel
 
 
+from transformers import AutoModel, AutoConfig
+import torch
+import torch.nn as nn
+
+class CustomModel(nn.Module):
+    def __init__(self, model_name, num_classes=2, feat_dim=128):
+        super(CustomModel, self).__init__()
+        print(f"-----Initializing CustomModel with {model_name}-----")
+
+        # Load model configuration and the model itself
+        self.config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_name, config=self.config, trust_remote_code=True)
+
+        self.emb_size = self.config.hidden_size
+        self.num_classes = num_classes
+        self.feat_dim = feat_dim
+
+        # Contrastive head: a small MLP for projecting embeddings to a lower-dimensional space
+        self.contrast_head = nn.Sequential(
+            nn.Linear(self.emb_size, self.emb_size, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.emb_size, self.feat_dim, bias=False))
+
+    def get_mean_embeddings(self, input_ids, attention_mask):
+        # Pass inputs through the transformer model
+        model_output = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+        # Compute mean embeddings by masking padded tokens
+        attention_mask = attention_mask.unsqueeze(-1)
+        mean_embeddings = torch.sum(model_output.last_hidden_state * attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+
+        return mean_embeddings
+
+    def contrast_logits(self, mean_output_1, mean_output_2):
+        # Project embeddings using the contrastive head
+        cnst_feat1 = self.contrast_head(mean_output_1)
+        cnst_feat2 = self.contrast_head(mean_output_2)
+        return cnst_feat1, cnst_feat2
+
+    def forward(self, input_ids, attention_mask, task_type="train"):
+        if task_type == "evaluate":
+            return self.get_mean_embeddings(input_ids, attention_mask)
+        else:
+            # Handle both pairwise and multi-turn input cases
+            if input_ids.shape[1] == 2:
+                # Pairwise input: Batch_Size x 2 x Max_Sequence_Length
+                input_ids_1, input_ids_2 = torch.unbind(input_ids, dim=1)
+                attention_mask_1, attention_mask_2 = torch.unbind(attention_mask, dim=1)
+            else:
+                # Multi-turn input: Batch_Size x (Num_of_turns + 1) x Max_Sequence_Length
+                batch_size = input_ids.shape[0]
+                input_ids_1 = input_ids[:, :-1, :].view(batch_size, -1)
+                input_ids_2 = input_ids[:, -1, :]
+                attention_mask_1 = attention_mask[:, :-1, :].view(batch_size, -1)
+                attention_mask_2 = attention_mask[:, -1, :]
+
+            # Get outputs for both inputs
+            bert_output_1 = self.model(input_ids=input_ids_1, attention_mask=attention_mask_1)
+            bert_output_2 = self.model(input_ids=input_ids_2, attention_mask=attention_mask_2)
+
+            # Compute mean embeddings
+            attention_mask_1 = attention_mask_1.unsqueeze(-1)
+            attention_mask_2 = attention_mask_2.unsqueeze(-1)
+            mean_output_1 = torch.sum(bert_output_1.last_hidden_state * attention_mask_1, dim=1) / torch.sum(attention_mask_1, dim=1)
+            mean_output_2 = torch.sum(bert_output_2.last_hidden_state * attention_mask_2, dim=1) / torch.sum(attention_mask_2, dim=1)
+
+            # Get contrastive features
+            cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
+
+            return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+
+
+
 class PSCBert(BertPreTrainedModel):
     def __init__(self, config, num_classes=2, feat_dim=128):
         super(PSCBert, self).__init__(config)

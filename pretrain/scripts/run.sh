@@ -3,7 +3,7 @@ PRETRAIN_DATA_DIR=$1
 python main.py \
     --resdir /home/zhihan/data/dse_model \
     --datapath ${PRETRAIN_DATA_DIR} \
-    --dataname tod_single_pos_3.tsv \
+    --dataname dse_training.tsv \
     --text sentence \
     --pairsimi pairsimi \
     --mode contrastive \

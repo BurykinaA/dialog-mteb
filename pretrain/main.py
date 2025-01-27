@@ -8,7 +8,7 @@ import argparse
 import torch
 import torch.nn as nn
 
-from models.Transformers import PSCBert, PSCRoberta, PSCDistilBERT
+from models.Transformers import PSCBert, PSCRoberta, PSCDistilBERT, CustomModel
 from training import PSCTrainer
 from dataloader.dataloader import pair_loader_csv, pair_loader_txt
 from utils.utils import set_global_random_seed, setup_path
@@ -34,14 +34,17 @@ def run(args):
     else:
         return ValueError()
     
+
     # model & optimizer
     config, tokenizer = get_bert_config_tokenizer(args.bert)
     if 'roberta' in args.bert:
         model = PSCRoberta.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
     elif 'distilbert' in args.bert:
         model = PSCDistilBERT.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
-    else:
+    elif 'bert' in args.bert:
         model = PSCBert.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
+    else:
+        model = CustomModel(args.bert)
 
     optimizer = get_optimizer(model, args)
     
