@@ -27,7 +27,12 @@ sentence1, sentence2
 '''
 def pair_loader_csv(args):
     delimiter = "," if args.dataname.endswith(".csv") else "\t"
-    train_data = list(csv.reader(os.path.join(args.datapath, args.dataname), delimiter=delimiter))
+    file_path = os.path.join(args.datapath, args.dataname)
+
+    # train_data = list(csv.reader(os.path.join(args.datapath, args.dataname), delimiter=delimiter))
+    with open(file_path, mode='r', encoding='utf-8') as file:
+        train_data = list(csv.reader(file, delimiter=delimiter))
+    
     train_text1 = [d[0] for d in train_data]
     train_text2 = [d[1] for d in train_data]
     pairsimi = [1 for _ in train_data]

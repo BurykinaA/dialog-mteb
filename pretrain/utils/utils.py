@@ -2,7 +2,7 @@ import os
 import random
 import torch
 import numpy as np
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 
 def set_global_random_seed(seed):
     torch.manual_seed(seed)
@@ -29,7 +29,7 @@ def setup_path(args):
     resPath = args.resdir + resPath
     print(f'results path: {resPath}')
 
-    tensorboard = SummaryWriter(resPath)
+    tensorboard = None #SummaryWriter(resPath)
     return resPath, tensorboard
 
 

@@ -112,6 +112,9 @@ class PSCTrainer(nn.Module):
                     input_ids, attention_mask, pairsimi = self.prepare_pairwise_input(batch)
                     
                 losses = self.train_step(input_ids, attention_mask, pairsimi)
+                print('dtype')
+                print(losses['instdisc_loss'].dtype)
+                print('-----')
 
 
                 if (self.gstep%self.args.logging_step==0) or (self.gstep==all_iter) or (self.gstep==self.args.max_iter):
