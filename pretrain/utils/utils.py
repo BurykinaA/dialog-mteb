@@ -41,6 +41,6 @@ def statistics_log(tensorboard, losses=None, global_step=0):
                 val = val.item()
             except:
                 pass
-            tensorboard.add_scalar('train/'+key, val, global_step)
+            #tensorboard.add_scalar('train/'+key, val, global_step)
             print("{}:\t {:.3f}".format(key, val))
             

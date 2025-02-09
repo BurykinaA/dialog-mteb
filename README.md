@@ -12,6 +12,9 @@ jxm/cde-small-v1
 HIT-TMG/KaLM-embedding-multilingual-mini-instruct-v1
 
 
+to start the trainig procedure from scratch 
+./train_dse.sh
+
 
 # comment DSE notes: Learning Dialogue Representations from Consecutive Utterances
 

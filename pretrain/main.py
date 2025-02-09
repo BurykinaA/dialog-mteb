@@ -14,6 +14,7 @@ from dataloader.dataloader import pair_loader_csv, pair_loader_txt
 from utils.utils import set_global_random_seed, setup_path
 from utils.optimizer import get_optimizer, get_bert_config_tokenizer, MODEL_CLASS
 import subprocess
+
     
 def run(args):
     args.resPath, args.tensorboard = setup_path(args)
@@ -44,7 +45,7 @@ def run(args):
     elif 'bert' in args.bert:
         model = PSCBert.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
     else:
-        model = CustomModel(args.bert)
+        model = CustomModel(args.bert, precision=args.mixed_precision)
 
     optimizer = get_optimizer(model, args)
     
@@ -73,6 +74,7 @@ def get_args(argv):
     parser.add_argument('--lr_scale', type=int, default=100, help="")
     parser.add_argument('--epochs', type=int, default=3)
     parser.add_argument('--max_iter', type=int, default=100000000)
+    parser.add_argument('--mixed_precision', type=str, default='None')
     # Contrastive learning
     parser.add_argument('--mode', type=str, default='contrastive', help="")
     parser.add_argument('--bert', type=str, default='distilbert', help="")

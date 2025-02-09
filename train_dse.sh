@@ -4,6 +4,9 @@ export OUTPUT_DIR=/home/coder/project/metrics
 export MODEL_TYPE=dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
 cd pretrain
 
+# [None, bf16, fp16]
+# 1024
+
 python main.py \
     --resdir ${OUTPUT_DIR} \
     --datapath ${DATA_DIR} \
@@ -13,11 +16,11 @@ python main.py \
     --contrast_type HardNeg \
     --lr 3e-06 \
     --lr_scale 100 \
-    --batch_size 1024 \
+    --batch_size 16 \
     --max_length 32 \
     --temperature 0.05 \
     --epochs 15 \
-    --max_iter 10000000 \
+    --mixed_precision None --max_iter 10000000 \
     --logging_step 400 \
     --feat_dim 128 \
     --num_turn 1 \
