@@ -1,4 +1,5 @@
 import random
+import os
 
 import torch
 import torch.nn as nn
@@ -97,6 +98,17 @@ class CustomModel(nn.Module):
         cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
 
         return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+    
+    def save_pretrained(self, save_directory):
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+        
+        model_path = os.path.join(save_directory, "pytorch_model.bin")
+        config_path = os.path.join(save_directory, "config.json")
+        
+        torch.save(self.state_dict(), model_path)
+        self.config.save_pretrained(save_directory)
+        print(f"Model and config saved to {save_directory}")
 
 
 

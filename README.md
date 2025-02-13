@@ -1,5 +1,8 @@
 # My notes 
 
+
+
+
 to evaluate models
 run:  evaluate/scripts/ft.sh 'dunzhang/stella_en_400M_v5' 'data/_downstream_data' 'metrics'
 and 

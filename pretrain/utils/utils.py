@@ -2,7 +2,7 @@ import os
 import random
 import torch
 import numpy as np
-#from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter
 
 def set_global_random_seed(seed):
     torch.manual_seed(seed)
@@ -29,7 +29,7 @@ def setup_path(args):
     resPath = args.resdir + resPath
     print(f'results path: {resPath}')
 
-    tensorboard = None #SummaryWriter(resPath)
+    tensorboard = SummaryWriter(resPath)
     return resPath, tensorboard
 
 
@@ -41,6 +41,6 @@ def statistics_log(tensorboard, losses=None, global_step=0):
                 val = val.item()
             except:
                 pass
-            #tensorboard.add_scalar('train/'+key, val, global_step)
+            tensorboard.add_scalar('train/'+key, val, global_step)
             print("{}:\t {:.3f}".format(key, val))
             
