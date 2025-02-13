@@ -6,6 +6,8 @@ cd pretrain
 
 # [None, bf16, fp16]
 # 1024
+# epochs 15
+# max_length 32
 
 python main.py \
     --resdir ${OUTPUT_DIR} \
@@ -16,7 +18,7 @@ python main.py \
     --contrast_type HardNeg \
     --lr 3e-06 \
     --lr_scale 100 \
-    --batch_size 16 \
+    --batch_size 1024 \
     --max_length 32 \
     --temperature 0.05 \
     --epochs 15 \
