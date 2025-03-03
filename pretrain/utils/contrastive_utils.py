@@ -18,6 +18,9 @@ class HardConLoss(nn.Module):
     def forward(self, features_1, features_2, pairsimi):
         losses = {}
 
+        features_1 = F.normalize(features_1, p=2, dim=-1)
+        features_2 = F.normalize(features_2, p=2, dim=-1)
+
         device = (torch.device('cuda') if features_1.is_cuda else torch.device('cpu'))
         batch_size = features_1.shape[0]
 
@@ -29,18 +32,23 @@ class HardConLoss(nn.Module):
         pos = torch.exp(torch.sum(features_1*features_2, dim=-1) / self.temperature)
         pos = torch.cat([pos, pos], dim=0)
         all_sim = torch.mm(features, features.t().contiguous())
+        #print(all_sim)
         neg = torch.exp(all_sim / self.temperature).masked_select(mask).view(2*batch_size, -1)
 
         pairmask = torch.cat([pairsimi, pairsimi], dim=0)
         posmask = (pairmask == 1).detach()
         posmask = posmask.type(torch.int32)
-
+        if posmask.sum() == 0:
+            print("⚠️ Warning: posmask.sum() == 0! Это вызовет деление на 0.")
 
       
         if self.contrast_type == "Orig":
             Ng = neg.sum(dim=-1)
             loss_pos = (-posmask * torch.log(pos / (Ng+pos))).sum() / posmask.sum()
             losses["instdisc_loss"] = loss_pos
+            # print(f"pos min/max: {pos.min().item()}, {pos.max().item()}")
+            # print(f"Ng min/max: {Ng.min().item()}, {Ng.max().item()}")
+
             return losses
 
         elif self.contrast_type == "HardNeg":
@@ -48,6 +56,9 @@ class HardConLoss(nn.Module):
             Ng = (negimp*neg).sum(dim = -1) / negimp.mean(dim = -1)
             loss_pos = (-posmask * torch.log(pos / (Ng+pos))).sum() / posmask.sum()
             losses["instdisc_loss"] = loss_pos
+            # print(f"pos min/max: {pos.min().item()}, {pos.max().item()}")
+            # print(f"Ng min/max: {Ng.min().item()}, {Ng.max().item()}")
+
             return losses
 
         else:

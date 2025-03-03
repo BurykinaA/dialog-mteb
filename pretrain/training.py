@@ -113,17 +113,18 @@ class PSCTrainer(nn.Module):
 
                 losses = self.train_step(input_ids, attention_mask, pairsimi)
 
-                print('dtype')
-                print(losses['instdisc_loss'].dtype)
-                print('-----')
+                # print('losses')
+                # print(losses['instdisc_loss'])
+                # print('-----')
 
-                if (self.gstep % self.args.logging_step == 0) or (self.gstep == all_iter) or (self.gstep == self.args.max_iter):
-                    statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
+                # if (self.gstep % self.args.logging_step == 0) or (self.gstep == all_iter) or (self.gstep == self.args.max_iter):
+                statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
 
-                elif self.gstep > self.args.max_iter:
+                if self.gstep > self.args.max_iter:
                     break
 
                 self.gstep += 1
+                #print(self.gstep)
 
             print("Finish Epoch: ", epoch)
             if self.args.save_model_every_epoch:
@@ -141,7 +142,13 @@ class PSCTrainer(nn.Module):
             feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
             losses = self.psc_loss(feat1, feat2, pairsimi)
             loss = losses["instdisc_loss"]
+            # with torch.autograd.detect_anomaly():
+                # feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
+                # losses = self.psc_loss(feat1, feat2, pairsimi)
+                # loss = losses["instdisc_loss"]
 
+
+            #with torch.autograd.detect_anomaly():
             loss.backward()
             self.optimizer.step()
             self.optimizer.zero_grad()

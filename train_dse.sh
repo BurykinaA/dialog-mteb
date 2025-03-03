@@ -18,7 +18,7 @@ python main.py \
     --contrast_type HardNeg \
     --lr 3e-06 \
     --lr_scale 100 \
-    --batch_size 1024 \
+    --batch_size 512 \
     --max_length 32 \
     --temperature 0.05 \
     --epochs 15 \

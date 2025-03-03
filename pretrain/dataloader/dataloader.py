@@ -13,7 +13,7 @@ class PairSamples(Dataset):
         
         
     def __len__(self):
-        return len(self.pairsimi)
+        return 2046 #len(self.pairsimi)
 
     def __getitem__(self, idx):
         return {'text1': self.train_x1[idx], 'text2': self.train_x2[idx], 'pairsimi': self.pairsimi[idx]}
