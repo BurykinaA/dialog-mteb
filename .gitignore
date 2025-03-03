@@ -16,6 +16,9 @@ __pycache__/
 /.pytest_cache
 /.mypy_cache
 
+
+/metricscontrastive.HardNeg.epoch1.dunzhang
+
 /doc/_apidoc/
 /build
 *snips_train.json
