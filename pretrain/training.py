@@ -18,10 +18,11 @@ from torch.cuda.amp import autocast, GradScaler
 
 
 class PSCTrainer(nn.Module):
-    def __init__(self, model, tokenizer, optimizer, train_loader, args):
+    def __init__(self, model, tokenizer, optimizer, train_loader, args, teacher_model=None):
         super(PSCTrainer, self).__init__()
         self.args = args
-        self.model = model
+        self.model = model  # Student model
+        self.teacher_model = teacher_model  # Teacher model
         self.tokenizer = tokenizer
         self.optimizer = optimizer
         self.train_loader = train_loader
@@ -31,7 +32,15 @@ class PSCTrainer(nn.Module):
         
         self.psc_loss = HardConLoss(temperature=self.args.temperature, contrast_type=self.args.contrast_type).cuda()
         self.classify_loss = nn.CrossEntropyLoss().cuda()
+        self.distill_loss = nn.MSELoss().cuda()  # Distillation loss
+        
+        # For FutureTOD algorithm
+        self.use_distillation = self.args.use_distillation and self.teacher_model is not None
+        self.update_teacher_interval = self.args.update_teacher_interval
+        
         print("\nUsing PSC_Trainer, {}\n".format(self.args.contrast_type))
+        if self.use_distillation:
+            print("Using Teacher-Student Distillation with update interval: {}".format(self.update_teacher_interval))
         
 
     def get_batch_token(self, text, max_length=-1):
@@ -78,7 +87,91 @@ class PSCTrainer(nn.Module):
         attention_mask = torch.cat([feat1['attention_mask'].reshape(batch_size, -1, seq_length), feat2['attention_mask'].unsqueeze(1)], dim=1)
         return input_ids.cuda(), attention_mask.cuda(), pairsimi.detach()
 
-
+    def prepare_distillation_input(self, batch):
+        """Prepare inputs for distillation (context and future)"""
+        context, future = batch['context'], batch['future']
+        
+        context_feat = self.get_batch_token(context)
+        future_feat = self.get_batch_token(future)
+        
+        context_ids = context_feat['input_ids'].cuda()
+        context_mask = context_feat['attention_mask'].cuda()
+        future_ids = future_feat['input_ids'].cuda()
+        future_mask = future_feat['attention_mask'].cuda()
+        
+        return context_ids, context_mask, future_ids, future_mask
+    
+    def train_distillation_step(self, context_ids, context_mask, future_ids, future_mask):
+        """Perform a distillation training step"""
+        use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
+        dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
+        
+        # Set teacher to eval mode
+        self.teacher_model.eval()
+        
+        if not use_mixed_precision:
+            # Get teacher embeddings (with context + future)
+            with torch.no_grad():
+                teacher_emb = self.teacher_model(context_ids, context_mask, 
+                                               task_type='distill',
+                                               future_input_ids=future_ids, 
+                                               future_attention_mask=future_mask)
+            
+            # Get student embeddings (with context only)
+            student_emb = self.model(context_ids, context_mask, task_type='distill')
+            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
+            
+            # Calculate distillation loss
+            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            
+            # Calculate MLM loss if needed
+            # mlm_loss = self.calculate_mlm_loss(context_ids, context_mask)
+            # total_loss = dist_loss + mlm_loss
+            total_loss = dist_loss
+            
+            total_loss.backward()
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            
+            return {"distill_loss": dist_loss.item()}
+        
+        # Mixed precision training
+        with autocast(device_type="cuda", dtype=dtype):
+            # Get teacher embeddings (with context + future)
+            with torch.no_grad():
+                teacher_emb = self.teacher_model(context_ids, context_mask, 
+                                               task_type='distill',
+                                               future_input_ids=future_ids, 
+                                               future_attention_mask=future_mask)
+            
+            # Get student embeddings (with context only)
+            student_emb = self.model(context_ids, context_mask, task_type='distill')
+            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
+            
+            # Calculate distillation loss
+            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            
+            # Calculate MLM loss if needed
+            # mlm_loss = self.calculate_mlm_loss(context_ids, context_mask)
+            # total_loss = dist_loss + mlm_loss
+            total_loss = dist_loss
+        
+        # FP16 requires GradScaler
+        if self.args.mixed_precision == "fp16":
+            self.scaler.scale(total_loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:  # bf16 or float32
+            total_loss.backward()
+            self.optimizer.step()
+        
+        self.optimizer.zero_grad()
+        return {"distill_loss": dist_loss.item()}
+    
+    def update_teacher(self):
+        """Update teacher model with student parameters"""
+        self.teacher_model.module.copy_parameters_from(self.model.module)
+        print("Teacher model updated with student parameters")
 
     def save_model(self, epoch, best_dev=False):
         if best_dev:
@@ -99,6 +192,9 @@ class PSCTrainer(nn.Module):
         print('\n={}/{}=Iterations/Batches'.format(all_iter, len(self.train_loader)))
 
         self.model.train()
+        if self.teacher_model:
+            self.teacher_model.eval()
+            
         epoch_iterator = tqdm(self.train_loader, desc="Iteration")
 
         # Создаем GradScaler, если включен fp16
@@ -106,27 +202,33 @@ class PSCTrainer(nn.Module):
 
         for epoch in range(self.args.epochs):
             for j, batch in enumerate(epoch_iterator):
-                if self.args.num_turn > 1:
-                    input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
+                # Check if we're using distillation
+                if self.use_distillation and 'context' in batch and 'future' in batch:
+                    # FutureTOD distillation
+                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
+                    losses = self.train_distillation_step(context_ids, context_mask, future_ids, future_mask)
                 else:
-                    input_ids, attention_mask, pairsimi = self.prepare_pairwise_input(batch)
+                    # Regular contrastive training
+                    if self.args.num_turn > 1:
+                        input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
+                    else:
+                        input_ids, attention_mask, pairsimi = self.prepare_pairwise_input(batch)
+                    
+                    losses = self.train_step(input_ids, attention_mask, pairsimi)
 
-                losses = self.train_step(input_ids, attention_mask, pairsimi)
-
-                # print('losses')
-                # print(losses['instdisc_loss'])
-                # print('-----')
-
-                # if (self.gstep % self.args.logging_step == 0) or (self.gstep == all_iter) or (self.gstep == self.args.max_iter):
                 statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
 
                 if self.gstep > self.args.max_iter:
                     break
 
                 self.gstep += 1
-                #print(self.gstep)
 
             print("Finish Epoch: ", epoch)
+            
+            # Update teacher model if needed
+            if self.use_distillation and (epoch + 1) % self.update_teacher_interval == 0:
+                self.update_teacher()
+                
             if self.args.save_model_every_epoch:
                 self.save_model(epoch, best_dev=False)
 

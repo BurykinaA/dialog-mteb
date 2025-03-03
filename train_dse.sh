@@ -1,7 +1,7 @@
 export DATA_DIR=/home/coder/project/data/data_todbert_pretrain
 export FILE_NAME="dse_training.tsv"
 export OUTPUT_DIR=/home/coder/project/metrics
-export MODEL_TYPE=dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
+export MODEL_TYPE=bertbase #dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
 cd pretrain
 
 # [None, bf16, fp16]
@@ -27,4 +27,6 @@ python main.py \
     --feat_dim 128 \
     --num_turn 1 \
     --seed 1 \
-    --save_model_every_epoch 
+    --save_model_every_epoch \
+    --use_distillation \
+    --update_teacher_interval 4

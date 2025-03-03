@@ -13,9 +13,9 @@ import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 
 class CustomModel(nn.Module):
-    def __init__(self, model_name, num_classes=2, feat_dim=128, precision='None'):
+    def __init__(self, model_name, num_classes=2, feat_dim=128, precision='None', is_teacher=False):
         super(CustomModel, self).__init__()
-        print(f"-----Initializing CustomModel with {model_name} (Precision: {precision if precision!='None' else 'float32'})-----")
+        print(f"-----Initializing {'Teacher' if is_teacher else 'Student'} CustomModel with {model_name} (Precision: {precision if precision!='None' else 'float32'})-----")
 
         # Определяем точность (None = float32)
         if precision == "fp16":
@@ -34,12 +34,16 @@ class CustomModel(nn.Module):
         self.emb_size = self.config.hidden_size
         self.num_classes = num_classes
         self.feat_dim = feat_dim
+        self.is_teacher = is_teacher
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(self.emb_size, self.feat_dim, bias=False)
         )
+        
+        # Distillation projection layer to align teacher and student representations
+        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
 
     def get_mean_embeddings(self, input_ids, attention_mask):
         if self.autocast_dtype:  # Mixed Precision, если включено
@@ -66,8 +70,18 @@ class CustomModel(nn.Module):
         cnst_feat2 = self.contrast_head(mean_output_2)
         return cnst_feat1, cnst_feat2
 
-    def forward(self, input_ids, attention_mask, task_type="train"):
+    def forward(self, input_ids, attention_mask, task_type="train", future_input_ids=None, future_attention_mask=None):
         if task_type == "evaluate":
+            return self.get_mean_embeddings(input_ids, attention_mask)
+            
+        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
+            # Teacher processes context + future
+            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
+            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
+            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+        
+        if task_type == "distill" and not self.is_teacher:
+            # Student processes only context
             return self.get_mean_embeddings(input_ids, attention_mask)
 
         if self.autocast_dtype:
@@ -99,6 +113,10 @@ class CustomModel(nn.Module):
 
         return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
     
+    def get_distill_embeddings(self, embeddings):
+        """Project embeddings for distillation"""
+        return self.distill_proj(embeddings)
+    
     def save_pretrained(self, save_directory):
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -109,26 +127,46 @@ class CustomModel(nn.Module):
         torch.save(self.state_dict(), model_path)
         self.config.save_pretrained(save_directory)
         print(f"Model and config saved to {save_directory}")
+        
+    def copy_parameters_from(self, source_model):
+        """Copy parameters from source model to this model"""
+        self.load_state_dict(source_model.state_dict())
+        print("Model parameters copied successfully")
 
 
 
 class PSCBert(BertPreTrainedModel):
-    def __init__(self, config, num_classes=2, feat_dim=128):
+    def __init__(self, config, num_classes=2, feat_dim=128, is_teacher=False):
         super(PSCBert, self).__init__(config)
-        print("-----Initializing PSCBert-----")
+        print(f"-----Initializing {'Teacher' if is_teacher else 'Student'} PSCBert-----")
         self.bert = BertModel(config)
         self.emb_size = self.bert.config.hidden_size
         self.num_classes = num_classes
         self.feat_dim = feat_dim
+        self.is_teacher = is_teacher
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(self.emb_size, self.feat_dim, bias=False))
+            
+        # Distillation projection layer
+        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type):        
+    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
         if task_type == "evaluate":
             return self.get_mean_embeddings(input_ids, attention_mask)
+            
+        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
+            # Teacher processes context + future
+            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
+            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
+            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+        
+        if task_type == "distill" and not self.is_teacher:
+            # Student processes only context
+            return self.get_mean_embeddings(input_ids, attention_mask)
+            
         else:
             '''
             When both query and reponse are single-turn sentence, input_ids are in shape
@@ -176,27 +214,50 @@ class PSCBert(BertPreTrainedModel):
         attention_mask = attention_mask.unsqueeze(-1)
         embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
         return embeddings
-
+        
+    def get_distill_embeddings(self, embeddings):
+        """Project embeddings for distillation"""
+        return self.distill_proj(embeddings)
+        
+    def copy_parameters_from(self, source_model):
+        """Copy parameters from source model to this model"""
+        self.load_state_dict(source_model.state_dict())
+        print("Model parameters copied successfully")
 
 
 
 class PSCRoberta(RobertaPreTrainedModel):
-    def __init__(self, config, num_classes=2, feat_dim=128):
+    def __init__(self, config, num_classes=2, feat_dim=128, is_teacher=False):
         super(PSCRoberta, self).__init__(config)
-        print("-----Initializing PSCRoberta-----")
+        print(f"-----Initializing {'Teacher' if is_teacher else 'Student'} PSCRoberta-----")
         self.roberta = RobertaModel(config)
         self.emb_size = self.roberta.config.hidden_size
         self.num_classes = num_classes
         self.feat_dim = feat_dim
+        self.is_teacher = is_teacher
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(self.emb_size, self.feat_dim, bias=False))
+            
+        # Distillation projection layer
+        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type):        
+    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
         if task_type == "evaluate":
             return self.get_mean_embeddings(input_ids, attention_mask)
+            
+        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
+            # Teacher processes context + future
+            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
+            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
+            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+        
+        if task_type == "distill" and not self.is_teacher:
+            # Student processes only context
+            return self.get_mean_embeddings(input_ids, attention_mask)
+            
         else:
             '''
             When both query and reponse are single-turn sentence, input_ids are in shape
@@ -244,27 +305,50 @@ class PSCRoberta(RobertaPreTrainedModel):
         attention_mask = attention_mask.unsqueeze(-1)
         embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
         return embeddings
-
+        
+    def get_distill_embeddings(self, embeddings):
+        """Project embeddings for distillation"""
+        return self.distill_proj(embeddings)
+        
+    def copy_parameters_from(self, source_model):
+        """Copy parameters from source model to this model"""
+        self.load_state_dict(source_model.state_dict())
+        print("Model parameters copied successfully")
 
 
 
 class PSCDistilBERT(DistilBertPreTrainedModel):
-    def __init__(self, config, num_classes=2, feat_dim=128):
+    def __init__(self, config, num_classes=2, feat_dim=128, is_teacher=False):
         super(PSCDistilBERT, self).__init__(config)
-        print("-----Initializing PSCDistilBERT-----")
+        print(f"-----Initializing {'Teacher' if is_teacher else 'Student'} PSCDistilBERT-----")
         self.distilbert = DistilBertModel(config)
         self.emb_size = self.distilbert.config.hidden_size
         self.num_classes = num_classes
         self.feat_dim = feat_dim
+        self.is_teacher = is_teacher
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(self.emb_size, self.feat_dim, bias=False))
+            
+        # Distillation projection layer
+        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type):        
+    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
         if task_type == "evaluate":
             return self.get_mean_embeddings(input_ids, attention_mask)
+            
+        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
+            # Teacher processes context + future
+            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
+            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
+            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+        
+        if task_type == "distill" and not self.is_teacher:
+            # Student processes only context
+            return self.get_mean_embeddings(input_ids, attention_mask)
+            
         else:
             '''
             When both query and reponse are single-turn sentence, input_ids are in shape
@@ -312,3 +396,12 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
         attention_mask = attention_mask.unsqueeze(-1)
         embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
         return embeddings
+        
+    def get_distill_embeddings(self, embeddings):
+        """Project embeddings for distillation"""
+        return self.distill_proj(embeddings)
+        
+    def copy_parameters_from(self, source_model):
+        """Copy parameters from source model to this model"""
+        self.load_state_dict(source_model.state_dict())
+        print("Model parameters copied successfully")

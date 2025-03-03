@@ -38,22 +38,41 @@ def run(args):
 
     # model & optimizer
     config, tokenizer = get_bert_config_tokenizer(args.bert)
+    
+    # Initialize student model
     if 'roberta' in args.bert:
-        model = PSCRoberta.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
+        model = PSCRoberta.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=False)
     elif 'distilbert' in args.bert:
-        model = PSCDistilBERT.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
+        model = PSCDistilBERT.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=False)
     elif 'bert' in args.bert:
-        model = PSCBert.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim)
+        model = PSCBert.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=False)
     else:
-        model = CustomModel(args.bert, precision=args.mixed_precision)
+        model = CustomModel(args.bert, precision=args.mixed_precision, is_teacher=False)
+
+    # Initialize teacher model if using distillation
+    teacher_model = None
+    if args.use_distillation:
+        print("Initializing teacher model for distillation")
+        if 'roberta' in args.bert:
+            teacher_model = PSCRoberta.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=True)
+        elif 'distilbert' in args.bert:
+            teacher_model = PSCDistilBERT.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=True)
+        elif 'bert' in args.bert:
+            teacher_model = PSCBert.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=True)
+        else:
+            teacher_model = CustomModel(args.bert, precision=args.mixed_precision, is_teacher=True)
+        
+        # Wrap teacher model in DataParallel and move to device
+        teacher_model = nn.DataParallel(teacher_model)
+        teacher_model.to(device)
 
     optimizer = get_optimizer(model, args)
     
     model = nn.DataParallel(model)
     model.to(device)
     
-    # set up the trainer
-    trainer = PSCTrainer(model, tokenizer, optimizer, train_loader, args)
+    # set up the trainer with teacher model if using distillation
+    trainer = PSCTrainer(model, tokenizer, optimizer, train_loader, args, teacher_model=teacher_model)
     trainer.train()
     return None
 
@@ -84,6 +103,9 @@ def get_args(argv):
     parser.add_argument('--num_turn', type=int, default=1, help="number of previous turn used in model training and response selection")
     parser.add_argument('--temperature', type=float, default=0.05, help="temperature required by contrastive loss")
     parser.add_argument('--save_model_every_epoch', action='store_true', default=True, help="Whether to save model at every epoch")
+    # Teacher-Student Distillation
+    parser.add_argument('--use_distillation', action='store_true', help="Whether to use teacher-student distillation")
+    parser.add_argument('--update_teacher_interval', type=int, default=4, help="Interval (in epochs) to update teacher with student parameters")
 
     
     args = parser.parse_args(argv)
