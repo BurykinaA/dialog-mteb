@@ -106,6 +106,8 @@ def get_args(argv):
     # Teacher-Student Distillation
     parser.add_argument('--use_distillation', action='store_true', help="Whether to use teacher-student distillation")
     parser.add_argument('--update_teacher_interval', type=int, default=4, help="Interval (in epochs) to update teacher with student parameters")
+    parser.add_argument('--distill_weight', type=float, default=1.0, 
+                    help="Weight for distillation loss when using combined learning (1.0 means equal weight)")
 
     
     args = parser.parse_args(argv)

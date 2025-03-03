@@ -9,6 +9,25 @@ cd pretrain
 # epochs 15
 # max_length 32
 
+# =====================================================================
+# LEARNING TYPE CONTROL:
+# The system uses the same data fields (text1/text2) for both contrastive 
+# learning and distillation:
+#
+# 1. For COMBINED learning (contrastive + distillation):
+#    - Enable --use_distillation flag
+#    - The system will use text1 as context and text2 as both response and future
+#    - Adjust --distill_weight to control the balance between losses
+#
+# 2. For CONTRASTIVE learning only:
+#    - Remove the --use_distillation flag
+#    - The system will only compute contrastive loss between text1 and text2
+#
+# 3. For DISTILLATION learning only:
+#    - This would require modifying the code to skip contrastive loss
+#    - Currently not directly supported through command line parameters
+# =====================================================================
+
 python main.py \
     --resdir ${OUTPUT_DIR} \
     --datapath ${DATA_DIR} \
@@ -29,4 +48,5 @@ python main.py \
     --seed 1 \
     --save_model_every_epoch \
     --use_distillation \
-    --update_teacher_interval 4
+    --update_teacher_interval 4 \
+    --distill_weight 1.0
