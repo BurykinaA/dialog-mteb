@@ -203,51 +203,36 @@ class PSCTrainer(nn.Module):
 
         for epoch in range(self.args.epochs):
             for j, batch in enumerate(epoch_iterator):
-                # Check if we can do combined learning (have both contrastive and distillation enabled)
-                if self.args.mode=='combined':
-                    # Combined contrastive and distillation learning
-                    # First prepare contrastive inputs
+                # Подготовка данных и обучение в зависимости от режима
+                if self.args.mode == 'combined':
+                    # Подготовка данных для контрастивного обучения
+                    if self.args.num_turn > 1:
+                        contrastive_input_ids, contrastive_attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
+                    else:
+                        contrastive_input_ids, contrastive_attention_mask, pairsimi = self.prepare_pairwise_input(batch)
+                    
+                    # Подготовка данных для дистилляции
+                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
+                    
+                    # Обучение с комбинированными данными
+                    losses = self.train_combined(
+                        contrastive_input_ids, contrastive_attention_mask, pairsimi,
+                        context_ids, context_mask, future_ids, future_mask
+                    )
+                    
+                elif self.args.mode == 'distill':
+                    # Подготовка данных для дистилляции
+                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
+                    losses = self.train_distillation(context_ids, context_mask, future_ids, future_mask)
+                    
+                elif self.args.mode == 'contrastive':
+                    # Подготовка данных для контрастивного обучения
                     if self.args.num_turn > 1:
                         input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
                     else:
                         input_ids, attention_mask, pairsimi = self.prepare_pairwise_input(batch)
                     
-                    # Then prepare distillation inputs using the same fields
-                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
-
-                    # Use the same context for both tasks
-                    losses = self.train_step(
-                        input_ids, attention_mask, 
-                        pairsimi=pairsimi,
-                        future_input_ids=future_ids, 
-                        future_attention_mask=future_mask,
-                        task_type="combined"
-                    )
-                
-                # If we only have distillation data
-                elif self.args.mode=='distill':
-                    # FutureTOD distillation only
-                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
-                    losses = self.train_step(
-                        context_ids, context_mask, 
-                        future_input_ids=future_ids, 
-                        future_attention_mask=future_mask,
-                        task_type="distill"
-                    )
-                
-                # If we only have contrastive data
-                elif self.args.mode=='contrastive':
-                    # Regular contrastive training only
-                    if self.args.num_turn > 1:
-                        input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
-                    else:
-                        input_ids, attention_mask, pairsimi = self.prepare_pairwise_input(batch)
-                    
-                    losses = self.train_step(
-                        input_ids, attention_mask, 
-                        pairsimi=pairsimi,
-                        task_type="contrastive"
-                    )
+                    losses = self.train_contrastive(input_ids, attention_mask, pairsimi)
 
                 statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
 
@@ -267,85 +252,44 @@ class PSCTrainer(nn.Module):
 
         return None
 
-    def train_step(self, input_ids, attention_mask, pairsimi=None, future_input_ids=None, future_attention_mask=None, task_type="combined"):
-        """
-        Unified training step that can handle contrastive learning, distillation, or both combined
-        
-        Args:
-            input_ids: Input token IDs (context)
-            attention_mask: Attention mask for input_ids
-            pairsimi: Similarity labels for contrastive learning (optional)
-            future_input_ids: Future token IDs for distillation (optional)
-            future_attention_mask: Attention mask for future_input_ids (optional)
-            task_type: "contrastive", "distill", or "combined"
-        
-        Returns:
-            Dictionary of losses
-        """
-        # Determine precision
+    def train_combined(self, contrastive_input_ids, contrastive_attention_mask, pairsimi,
+                      context_ids, context_mask, future_ids, future_mask):
+        """Обучение с комбинированием контрастивного обучения и дистилляции"""
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
         
-        # For combined learning, we need both contrastive and distillation components
-        if task_type == "combined" and pairsimi is not None and future_input_ids is not None:
-            # Set teacher to eval mode
-            if self.teacher_model:
-                self.teacher_model.eval()
+        # Функция для выполнения прямого и обратного прохода
+        def forward_backward():
+            # Контрастивная часть
+            feat1, feat2, _, _ = self.model(contrastive_input_ids, contrastive_attention_mask, task_type='contrastive')
+            contrastive_losses = self.psc_loss(feat1, feat2, pairsimi)
+            contrastive_loss = contrastive_losses["instdisc_loss"]
             
-            if not use_mixed_precision:
-                # Contrastive part
-                feat1, feat2, mean_output_1, mean_output_2 = self.model(input_ids, attention_mask, task_type='contrastive')
-                contrastive_losses = self.psc_loss(feat1, feat2, pairsimi)
-                contrastive_loss = contrastive_losses["instdisc_loss"]
-                
-                # Distillation part
-                with torch.no_grad():
-                    print(f'input_ids {input_ids.shape}')
-                    print(f'future_input_ids {future_input_ids.shape}')
-                    teacher_emb = self.teacher_model(input_ids, attention_mask, 
-                                                   task_type='distill',
-                                                   future_input_ids=future_input_ids, 
-                                                   future_attention_mask=future_attention_mask)
-                
-                # Use the mean embeddings from contrastive learning for distillation
-                student_proj_emb = self.model.module.get_distill_embeddings(mean_output_1)
-                dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
-                
-                # Combine losses with weighting
-                total_loss = contrastive_loss + self.args.distill_weight * dist_loss
-                
-                total_loss.backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                
-                # Return both losses
-                return {
-                    "instdisc_loss": contrastive_loss.item(),
-                    "distill_loss": dist_loss.item(),
-                    "total_loss": total_loss.item()
-                }
+            # Дистилляционная часть
+            with torch.no_grad():
+                teacher_emb = self.teacher_model(context_ids, context_mask, 
+                                               task_type='distill',
+                                               future_input_ids=future_ids, 
+                                               future_attention_mask=future_mask)
             
-            # Mixed precision for combined learning
+            student_emb = self.model(context_ids, context_mask, task_type='distill')
+            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
+            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            
+            # Комбинированная потеря
+            total_loss = contrastive_loss + self.args.distill_weight * dist_loss
+            
+            return total_loss, contrastive_loss, dist_loss
+        
+        # Обработка с учетом precision
+        if not use_mixed_precision:
+            total_loss, contrastive_loss, dist_loss = forward_backward()
+            total_loss.backward()
+            self.optimizer.step()
+        else:
             with autocast(device_type="cuda", dtype=dtype):
-                # Contrastive part
-                feat1, feat2, mean_output_1, mean_output_2 = self.model(input_ids, attention_mask, task_type='contrastive')
-                contrastive_losses = self.psc_loss(feat1, feat2, pairsimi)
-                contrastive_loss = contrastive_losses["instdisc_loss"]
+                total_loss, contrastive_loss, dist_loss = forward_backward()
                 
-                # Distillation part
-                with torch.no_grad():
-                    teacher_emb = self.teacher_model(input_ids, attention_mask, 
-                                                   task_type='distill',
-                                                   future_input_ids=future_input_ids, 
-                                                   future_attention_mask=future_attention_mask)
-                
-                # Use the mean embeddings from contrastive learning for distillation
-                student_proj_emb = self.model.module.get_distill_embeddings(mean_output_1)
-                dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
-                
-                # Combine losses with weighting
-                total_loss = contrastive_loss + self.args.distill_weight * dist_loss
-            
             if self.args.mixed_precision == "fp16":
                 self.scaler.scale(total_loss).backward()
                 self.scaler.step(self.optimizer)
@@ -353,35 +297,35 @@ class PSCTrainer(nn.Module):
             else:  # bf16
                 total_loss.backward()
                 self.optimizer.step()
-            
-            self.optimizer.zero_grad()
-            
-            # Return both losses
-            return {
-                "instdisc_loss": contrastive_loss.item(),
-                "distill_loss": dist_loss.item(),
-                "total_loss": total_loss.item()
-            }
         
-        # Handle individual task types (existing code)
-        elif task_type == "contrastive" and pairsimi is not None:
-            # Contrastive learning path
-            if not use_mixed_precision:
-                feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
-                losses = self.psc_loss(feat1, feat2, pairsimi)
-                loss = losses["instdisc_loss"]
-                
-                loss.backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                return losses
-            
-            # Mixed precision for contrastive learning
+        self.optimizer.zero_grad()
+        
+        return {
+            "instdisc_loss": contrastive_loss.item(),
+            "distill_loss": dist_loss.item(),
+            "total_loss": total_loss.item()
+        }
+
+    def train_contrastive(self, input_ids, attention_mask, pairsimi):
+        """Обучение только с контрастивной потерей"""
+        use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
+        dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
+        
+        # Функция для выполнения прямого прохода
+        def forward():
+            feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
+            losses = self.psc_loss(feat1, feat2, pairsimi)
+            return losses, losses["instdisc_loss"]
+        
+        # Обработка с учетом precision
+        if not use_mixed_precision:
+            losses, loss = forward()
+            loss.backward()
+            self.optimizer.step()
+        else:
             with autocast(device_type="cuda", dtype=dtype):
-                feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
-                losses = self.psc_loss(feat1, feat2, pairsimi)
-                loss = losses["instdisc_loss"]
-            
+                losses, loss = forward()
+                
             if self.args.mixed_precision == "fp16":
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
@@ -389,68 +333,44 @@ class PSCTrainer(nn.Module):
             else:  # bf16
                 loss.backward()
                 self.optimizer.step()
-            
-            self.optimizer.zero_grad()
-            return losses
         
-        elif task_type == "distill" and future_input_ids is not None:
-            # Set teacher to eval mode
-            if self.teacher_model:
-                self.teacher_model.eval()
+        self.optimizer.zero_grad()
+        return losses
+
+    def train_distillation(self, context_ids, context_mask, future_ids, future_mask):
+        """Обучение только с дистилляционной потерей"""
+        use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
+        dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
+        
+        # Функция для выполнения прямого прохода
+        def forward():
+            with torch.no_grad():
+                teacher_emb = self.teacher_model(context_ids, context_mask, 
+                                               task_type='distill',
+                                               future_input_ids=future_ids, 
+                                               future_attention_mask=future_mask)
             
-            if not use_mixed_precision:
-                # Get teacher embeddings (with context + future)
-                with torch.no_grad():
-                    teacher_emb = self.teacher_model(input_ids, attention_mask, 
-                                                   task_type='distill',
-                                                   future_input_ids=future_input_ids, 
-                                                   future_attention_mask=future_attention_mask)
-                
-                # Get student embeddings (with context only)
-                student_emb = self.model(input_ids, attention_mask, task_type='distill')
-                student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
-                
-                # Calculate distillation loss
-                dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
-                
-                # Calculate MLM loss if needed
-                # mlm_loss = self.calculate_mlm_loss(input_ids, attention_mask)
-                # total_loss = dist_loss + mlm_loss
-                total_loss = dist_loss
-                
-                total_loss.backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                
-                return {"distill_loss": dist_loss.item()}
-            
-            # Mixed precision for distillation
+            student_emb = self.model(context_ids, context_mask, task_type='distill')
+            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
+            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            return dist_loss
+        
+        # Обработка с учетом precision
+        if not use_mixed_precision:
+            dist_loss = forward()
+            dist_loss.backward()
+            self.optimizer.step()
+        else:
             with autocast(device_type="cuda", dtype=dtype):
-                # Get teacher embeddings (with context + future)
-                with torch.no_grad():
-                    teacher_emb = self.teacher_model(input_ids, attention_mask, 
-                                                   task_type='distill',
-                                                   future_input_ids=future_input_ids, 
-                                                   future_attention_mask=future_attention_mask)
+                dist_loss = forward()
                 
-                # Get student embeddings (with context only)
-                student_emb = self.model(input_ids, attention_mask, task_type='distill')
-                student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
-                
-                # Calculate distillation loss
-                dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
-                total_loss = dist_loss
-            
             if self.args.mixed_precision == "fp16":
-                self.scaler.scale(total_loss).backward()
+                self.scaler.scale(dist_loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:  # bf16
-                total_loss.backward()
+                dist_loss.backward()
                 self.optimizer.step()
-            
-            self.optimizer.zero_grad()
-            return {"distill_loss": dist_loss.item()}
         
-        else:
-            raise ValueError(f"Invalid task type '{task_type}' or missing required inputs")
+        self.optimizer.zero_grad()
+        return {"distill_loss": dist_loss.item()}
