@@ -49,10 +49,10 @@ def run(args):
     else:
         model = CustomModel(args.bert, precision=args.mixed_precision, is_teacher=False)
 
-    # Initialize teacher model if using distillation
+    # Initialize teacher model if mode is distill or combined
     teacher_model = None
-    if args.use_distillation:
-        print("Initializing teacher model for distillation")
+    if args.mode in ['distill', 'combined']:
+        print(f"Initializing teacher model for {args.mode} learning")
         if 'roberta' in args.bert:
             teacher_model = PSCRoberta.from_pretrained(MODEL_CLASS[args.bert], feat_dim=args.feat_dim, is_teacher=True)
         elif 'distilbert' in args.bert:
@@ -94,8 +94,10 @@ def get_args(argv):
     parser.add_argument('--epochs', type=int, default=3)
     parser.add_argument('--max_iter', type=int, default=100000000)
     parser.add_argument('--mixed_precision', type=str, default='None')
-    # Contrastive learning
-    parser.add_argument('--mode', type=str, default='contrastive', help="")
+    # Learning mode
+    parser.add_argument('--mode', type=str, default='contrastive', 
+                        choices=['contrastive', 'distill', 'combined'], 
+                        help="Learning mode: contrastive, distill, or combined")
     parser.add_argument('--bert', type=str, default='distilbert', help="")
     parser.add_argument('--contrast_type', type=str, default="HardNeg")
     parser.add_argument('--feat_dim', type=int, default=128, help="dimension of the projected features for instance discrimination loss")
@@ -104,7 +106,6 @@ def get_args(argv):
     parser.add_argument('--temperature', type=float, default=0.05, help="temperature required by contrastive loss")
     parser.add_argument('--save_model_every_epoch', action='store_true', default=True, help="Whether to save model at every epoch")
     # Teacher-Student Distillation
-    parser.add_argument('--use_distillation', action='store_true', help="Whether to use teacher-student distillation")
     parser.add_argument('--update_teacher_interval', type=int, default=4, help="Interval (in epochs) to update teacher with student parameters")
     parser.add_argument('--distill_weight', type=float, default=1.0, 
                     help="Weight for distillation loss when using combined learning (1.0 means equal weight)")
@@ -114,6 +115,8 @@ def get_args(argv):
     args.use_gpu = args.gpuid[0] >= 0
     args.resPath = None
     args.tensorboard = None
+    # Set use_distillation based on mode
+    args.use_distillation = args.mode in ['distill', 'combined']
     return args
 
 if __name__ == '__main__':

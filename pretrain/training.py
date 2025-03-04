@@ -35,12 +35,12 @@ class PSCTrainer(nn.Module):
         self.distill_loss = nn.MSELoss().cuda()  # Distillation loss
         
         # For FutureTOD algorithm
-        self.use_distillation = self.args.use_distillation and self.teacher_model is not None
+        self.use_distillation = self.args.mode in ['distill', 'combined']
         self.update_teacher_interval = self.args.update_teacher_interval
         
-        print("\nUsing PSC_Trainer, {}\n".format(self.args.contrast_type))
+        print(f"\nUsing PSC_Trainer in {self.args.mode} mode, {self.args.contrast_type}\n")
         if self.use_distillation:
-            print("Using Teacher-Student Distillation with update interval: {}".format(self.update_teacher_interval))
+            print(f"Using Teacher-Student Distillation with update interval: {self.update_teacher_interval}")
         
 
     def get_batch_token(self, text, max_length=-1):
