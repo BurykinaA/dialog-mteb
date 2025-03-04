@@ -157,13 +157,13 @@ class PSCBert(BertPreTrainedModel):
         if task_type == "evaluate":
             return self.get_mean_embeddings(input_ids, attention_mask)
             
-        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
+        elif task_type == "distill" and self.is_teacher and future_input_ids is not None:
             # Teacher processes context + future
             combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
             combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
             return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
         
-        if task_type == "distill" and not self.is_teacher:
+        elif task_type == "distill" and not self.is_teacher:
             # Student processes only context
             return self.get_mean_embeddings(input_ids, attention_mask)
             

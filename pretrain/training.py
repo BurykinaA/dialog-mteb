@@ -35,7 +35,7 @@ class PSCTrainer(nn.Module):
         self.distill_loss = nn.MSELoss().cuda()  # Distillation loss
         
         # For FutureTOD algorithm
-        self.use_distillation = self.args.mode in ['distill', 'combined']
+        self.use_distillation = self.args.use_distillation
         self.update_teacher_interval = self.args.update_teacher_interval
         
         print(f"\nUsing PSC_Trainer in {self.args.mode} mode, {self.args.contrast_type}\n")
@@ -204,7 +204,7 @@ class PSCTrainer(nn.Module):
         for epoch in range(self.args.epochs):
             for j, batch in enumerate(epoch_iterator):
                 # Check if we can do combined learning (have both contrastive and distillation enabled)
-                if self.use_distillation and 'text1' in batch and 'text2' in batch and 'pairsimi' in batch:
+                if self.args.mode=='combined':
                     # Combined contrastive and distillation learning
                     # First prepare contrastive inputs
                     if self.args.num_turn > 1:
@@ -214,7 +214,7 @@ class PSCTrainer(nn.Module):
                     
                     # Then prepare distillation inputs using the same fields
                     context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
-                    
+
                     # Use the same context for both tasks
                     losses = self.train_step(
                         input_ids, attention_mask, 
@@ -225,7 +225,7 @@ class PSCTrainer(nn.Module):
                     )
                 
                 # If we only have distillation data
-                elif self.use_distillation and 'context' in batch and 'future' in batch:
+                elif self.args.mode=='distill':
                     # FutureTOD distillation only
                     context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
                     losses = self.train_step(
@@ -236,7 +236,7 @@ class PSCTrainer(nn.Module):
                     )
                 
                 # If we only have contrastive data
-                else:
+                elif self.args.mode=='contrastive':
                     # Regular contrastive training only
                     if self.args.num_turn > 1:
                         input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
@@ -300,6 +300,8 @@ class PSCTrainer(nn.Module):
                 
                 # Distillation part
                 with torch.no_grad():
+                    print(f'input_ids {input_ids.shape}')
+                    print(f'future_input_ids {future_input_ids.shape}')
                     teacher_emb = self.teacher_model(input_ids, attention_mask, 
                                                    task_type='distill',
                                                    future_input_ids=future_input_ids, 
