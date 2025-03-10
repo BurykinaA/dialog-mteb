@@ -105,6 +105,9 @@ class PSCTrainer(nn.Module):
         self.scaler = GradScaler() if self.args.mixed_precision == "fp16" else None
 
         for epoch in range(self.args.epochs):
+            epoch_loss = 0  # Для накопления лосса за эпоху
+            num_batches = 0  # Счётчик батчей
+
             for j, batch in enumerate(epoch_iterator):
                 if self.args.num_turn > 1:
                     input_ids, attention_mask, pairsimi = self.prepare_pairwise_input_multiturn_concatenate(batch)
@@ -117,14 +120,24 @@ class PSCTrainer(nn.Module):
                 # print(losses['instdisc_loss'])
                 # print('-----')
 
-                # if (self.gstep % self.args.logging_step == 0) or (self.gstep == all_iter) or (self.gstep == self.args.max_iter):
-                statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
+                epoch_loss += losses['instdisc_loss']
+                num_batches += 1
+
+                if (self.gstep % self.args.logging_step == 0) or (self.gstep == all_iter) or (self.gstep == self.args.max_iter):
+                    statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
 
                 if self.gstep > self.args.max_iter:
                     break
 
                 self.gstep += 1
                 #print(self.gstep)
+
+            avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else 0
+            print(f"Finish Epoch {epoch}, Average Loss: {avg_epoch_loss}")
+
+            # Логируем средний лосс за эпоху на другом графике (epoch/avg_loss)
+            self.args.tensorboard.add_scalar('epoch/avg_loss', avg_epoch_loss, epoch)
+            self.args.tensorboard.flush()
 
             print("Finish Epoch: ", epoch)
             if self.args.save_model_every_epoch:

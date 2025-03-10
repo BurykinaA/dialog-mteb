@@ -108,7 +108,7 @@ class CustomModel(nn.Module):
         
         torch.save(self.state_dict(), model_path)
         self.config.save_pretrained(save_directory)
-        print(f"Model and config saved to {save_directory}")
+        #print(f"Model and config saved to {save_directory}")
 
 
 

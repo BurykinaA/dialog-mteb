@@ -34,15 +34,14 @@ def setup_path(args):
 
 
 def statistics_log(tensorboard, losses=None, global_step=0):
-    print("[{}]-----".format(global_step))
+    # print("[{}]-----".format(global_step))
     if losses is not None:
         for key, val in losses.items():
             try:
                 val = val.item()
             except:
                 pass
-            tensorboard.add_scalar('train/'+key, val, global_step)
-            print("{}:\t {:.3f}".format(key, val))
+            # print("{}:\t {:.3f}".format(key, val))
             tensorboard.add_scalar('train/'+key, val, global_step)
             tensorboard.flush()
 
