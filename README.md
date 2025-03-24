@@ -18,6 +18,9 @@ HIT-TMG/KaLM-embedding-multilingual-mini-instruct-v1
 to start the trainig procedure from scratch 
 ./train_dse.sh
 
+to evaluate pretrained models
+./evaluate/scripts/sim_check.sh
+
 
 # comment DSE notes: Learning Dialogue Representations from Consecutive Utterances
 

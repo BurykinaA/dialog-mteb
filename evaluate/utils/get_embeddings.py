@@ -140,7 +140,29 @@ def calculate_embedding(texts, model, tokenizer, device='cuda', batch_size=1000,
     return results[1:].numpy().astype(np.float32)
 
 
-
+def process_epoch_checkpoints(model_dir, texts, output_dir, batch_size=10, average_embedding=False):
+    # Get all checkpoint directories (assuming they're named like 'checkpoint-100', 'checkpoint-200', etc.)
+    checkpoints = [d for d in os.listdir(model_dir) if d.startswith('checkpoint-')]
+    checkpoints.sort(key=lambda x: int(x.split('-')[1]))  # Sort by epoch number
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    for checkpoint in checkpoints:
+        checkpoint_path = os.path.join(model_dir, checkpoint)
+        print(f"\nProcessing checkpoint: {checkpoint}")
+        
+        # Load tokenizer and model for this checkpoint
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, use_fast=True)
+        model = AutoModel.from_pretrained(checkpoint_path).to(device)
+        
+        # Calculate embeddings
+        task_type = "average_embedding" if average_embedding else "cls_embedding"
+        embeddings = calculate_embedding(texts, model, tokenizer, task_type=task_type, verbose=True)
+        
+        # Save embeddings for this epoch
+        output_path = os.path.join(output_dir, f"embeddings_{checkpoint}.npy")
+        np.save(output_path, embeddings)
+        print(f"Saved embeddings to {output_path}")
 
 
 if __name__ == "__main__":

@@ -319,48 +319,169 @@ def eval_out_of_scope_detection(model, tokenizer, model_dir, data_root_dir, outp
                 f.write(message + "\n\n")
 
 
+##########################################
+
+def find_checkpoints(model_dir):
+    """Find all checkpoint directories in the model directory"""
+    checkpoints = []
+    for item in os.listdir(model_dir):
+        if os.path.isdir(os.path.join(model_dir, item)) and item.startswith('checkpoint-'):
+            checkpoints.append(item)
+    # Sort checkpoints by step number
+    checkpoints.sort(key=lambda x: int(x.split('-')[1]))
+    return checkpoints
+
+def evaluate_checkpoint(checkpoint_path, args):
+    """Evaluate a single checkpoint"""
+    print(f"\nEvaluating checkpoint: {checkpoint_path}")
+    
+    # Load model and tokenizer
+    model = AutoModel.from_pretrained(checkpoint_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, use_fast=True)
+    print('ААА load model')
+    
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Create output subdirectory for this checkpoint
+    checkpoint_output_dir = os.path.join(args.output_dir, os.path.basename(checkpoint_path))
+    if not os.path.exists(checkpoint_output_dir):
+        print('ААА create checkpoint dir')
+        os.makedirs(checkpoint_output_dir)
+
+
+    print('AAA', args.TASK)
+    
+    # Run evaluation based on task
+    if args.TASK == "intent":
+        eval_intent_classification_with_prototypical_net(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.num_runs, args.max_seq_length
+        )
+    elif args.TASK == "oos":
+        eval_out_of_scope_detection(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.num_runs, args.max_seq_length
+        )
+    elif args.TASK == "rs_ubuntu":
+        eval_response_selection_ubuntu(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.max_seq_length
+        )
+    elif args.TASK == "rs_amazon":
+        eval_response_selection_amazonqa(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.max_seq_length
+        )
+    elif args.TASK == "utterance_retrieval":
+        eval_utterance_retrieval(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.max_seq_length
+        )
+    elif args.TASK == "nli":
+        eval_natural_language_inference(
+            model, tokenizer, checkpoint_path, args.data_root_dir, 
+            checkpoint_output_dir, args.embedding_type, args.max_seq_length
+        )
+    else:
+        raise ValueError("Choose TASK from ['rs', 'intent', 'utterance_retrieval', 'oos']")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_dir', type=str, required=True, help='directory to the pre-trained model')
-    parser.add_argument('--data_root_dir', type=str, required=True, help="directory to the folder that contains all the evaluation data")
-    parser.add_argument('--output_dir', type=str, required=True, help="directory to save all the evaluation results")
-    parser.add_argument('--TASK', type=str, required=True, help="The task to perform. Choose from ['rs', 'intent', 'utterance_retrieval', 'oos']")
-    parser.add_argument('--embedding_type', type=str, default='average_embedding', help="How to calculate sentence embedding. Choose from ['average_embedding', 'cls_embedding']")
-    parser.add_argument('--num_runs', type=int, default=10, help="Number of independent experiments to run for 'oos' and 'intent'. ")
-    parser.add_argument('--max_seq_length', type=int, default=50, help="Max length of the input sequence")
-
-
+    parser.add_argument('--model_dir', type=str, required=True, 
+                       help='directory to the pre-trained model containing checkpoints')
+    parser.add_argument('--data_root_dir', type=str, required=True, 
+                       help="directory to the folder that contains all the evaluation data")
+    parser.add_argument('--output_dir', type=str, required=True, 
+                       help="directory to save all the evaluation results")
+    parser.add_argument('--TASK', type=str, required=True, 
+                       help="The task to perform. Choose from ['rs', 'intent', 'utterance_retrieval', 'oos']")
+    parser.add_argument('--embedding_type', type=str, default='average_embedding', 
+                       help="How to calculate sentence embedding. Choose from ['average_embedding', 'cls_embedding']")
+    parser.add_argument('--num_runs', type=int, default=10, 
+                       help="Number of independent experiments to run for 'oos' and 'intent'")
+    parser.add_argument('--max_seq_length', type=int, default=50, 
+                       help="Max length of the input sequence")
+    parser.add_argument('--eval_all_checkpoints', action='store_true',
+                       help="Evaluate all checkpoints instead of just the final model")
+    
     args = parser.parse_args()    
 
-    print(f'args.output_dir {args.output_dir}')
-
+    print(f'Output directory: {args.output_dir}')
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)        
 
+    # Set embedding type based on model if needed
     if "simcse" in args.model_dir.lower():
         args.embedding_type = "cls_embedding"
     elif "dialogpt" in args.model_dir.lower():
         args.embedding_type = "dialogpt_embedding"
 
-    args.model_dir = args.model_dir.replace("//","/")
-    model = AutoModel.from_pretrained(args.model_dir, trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir, use_fast=True)
-    if tokenizer.pad_token == None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    if args.TASK == "intent":
-        eval_intent_classification_with_prototypical_net(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.num_runs, args.max_seq_length)
-    elif args.TASK == "oos":
-        eval_out_of_scope_detection(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.num_runs, args.max_seq_length)
-    elif args.TASK == "rs_ubuntu":
-        eval_response_selection_ubuntu(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
-    elif args.TASK == "rs_amazon":
-        eval_response_selection_amazonqa(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
-    elif args.TASK == "utterance_retrieval":
-        eval_utterance_retrieval(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
-    elif args.TASK == "nli":
-        eval_natural_language_inference(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
+    args.model_dir = args.model_dir.replace("//", "/")
+    
+    if args.eval_all_checkpoints:
+        # Evaluate all checkpoints
+        checkpoints = find_checkpoints(args.model_dir)
+        if not checkpoints:
+            print("No checkpoints found in model directory!")
+            exit(1)
+            
+        for checkpoint in checkpoints:
+            checkpoint_path = os.path.join(args.model_dir, checkpoint)
+            evaluate_checkpoint(checkpoint_path, args)
     else:
-        raise ValueError("Choose TASK from ['rs', 'intent', 'utterance_retrieval', 'oos']")
+        # Just evaluate the final model (original behavior)
+        evaluate_checkpoint(args.model_dir, args)
+
+
+
+
+
+
+
+
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--model_dir', type=str, required=True, help='directory to the pre-trained model')
+#     parser.add_argument('--data_root_dir', type=str, required=True, help="directory to the folder that contains all the evaluation data")
+#     parser.add_argument('--output_dir', type=str, required=True, help="directory to save all the evaluation results")
+#     parser.add_argument('--TASK', type=str, required=True, help="The task to perform. Choose from ['rs', 'intent', 'utterance_retrieval', 'oos']")
+#     parser.add_argument('--embedding_type', type=str, default='average_embedding', help="How to calculate sentence embedding. Choose from ['average_embedding', 'cls_embedding']")
+#     parser.add_argument('--num_runs', type=int, default=10, help="Number of independent experiments to run for 'oos' and 'intent'. ")
+#     parser.add_argument('--max_seq_length', type=int, default=50, help="Max length of the input sequence")
+
+
+#     args = parser.parse_args()    
+
+#     print(f'args.output_dir {args.output_dir}')
+
+#     if not os.path.exists(args.output_dir):
+#         os.makedirs(args.output_dir)        
+
+#     if "simcse" in args.model_dir.lower():
+#         args.embedding_type = "cls_embedding"
+#     elif "dialogpt" in args.model_dir.lower():
+#         args.embedding_type = "dialogpt_embedding"
+
+#     args.model_dir = args.model_dir.replace("//","/")
+#     model = AutoModel.from_pretrained(args.model_dir, trust_remote_code=True)
+#     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, use_fast=True)
+#     if tokenizer.pad_token == None:
+#         tokenizer.pad_token = tokenizer.eos_token
+
+#     if args.TASK == "intent":
+#         eval_intent_classification_with_prototypical_net(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.num_runs, args.max_seq_length)
+#     elif args.TASK == "oos":
+#         eval_out_of_scope_detection(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.num_runs, args.max_seq_length)
+#     elif args.TASK == "rs_ubuntu":
+#         eval_response_selection_ubuntu(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
+#     elif args.TASK == "rs_amazon":
+#         eval_response_selection_amazonqa(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
+#     elif args.TASK == "utterance_retrieval":
+#         eval_utterance_retrieval(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
+#     elif args.TASK == "nli":
+#         eval_natural_language_inference(model, tokenizer, args.model_dir, args.data_root_dir, args.output_dir, args.embedding_type, args.max_seq_length)
+#     else:
+#         raise ValueError("Choose TASK from ['rs', 'intent', 'utterance_retrieval', 'oos']")
     

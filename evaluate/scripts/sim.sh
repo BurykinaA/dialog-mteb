@@ -12,6 +12,7 @@ python evaluate/run_similarity.py \
     --num_runs 10 \
     --max_seq_length 64
 
+
 python evaluate/run_similarity.py \
     --model_dir ${MODEL_DIR}/${model_name} \
     --data_root_dir ${DATA_DIR} \
@@ -27,6 +28,7 @@ python evaluate/run_similarity.py \
     --output_dir ${OUTPUT_DIR}/rs_ubuntu_sim/${model_name} \
     --TASK rs_ubuntu \
     --max_seq_length 128
+
 
 python evaluate/run_similarity.py \
     --model_dir ${MODEL_DIR}/${model_name} \
