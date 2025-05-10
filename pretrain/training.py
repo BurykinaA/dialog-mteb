@@ -260,21 +260,30 @@ class PSCTrainer(nn.Module):
         
         # Функция для выполнения прямого и обратного прохода
         def forward_backward():
-            # Контрастивная часть
-            feat1, feat2, _, _ = self.model(contrastive_input_ids, contrastive_attention_mask, task_type='contrastive')
-            contrastive_losses = self.psc_loss(feat1, feat2, pairsimi)
+            # Контрастивная часть + Студенческая часть дистилляции
+            # Модель вернет: cnst_feat1, cnst_feat2, projected_student_emb_for_distill
+            cnst_feat1, cnst_feat2, student_proj_emb_for_distill = self.model(
+                input_ids=contrastive_input_ids, 
+                attention_mask=contrastive_attention_mask, 
+                task_type="combined_learning_student_forward" # Updated task_type
+            )
+            contrastive_losses = self.psc_loss(cnst_feat1, cnst_feat2, pairsimi)
             contrastive_loss = contrastive_losses["instdisc_loss"]
             
-            # Дистилляционная часть
+            # Дистилляционная часть - Учитель
             with torch.no_grad():
-                teacher_emb = self.teacher_model(context_ids, context_mask, 
-                                               task_type='distill',
-                                               future_input_ids=future_ids, 
-                                               future_attention_mask=future_mask)
+                # Учитель обрабатывает context_ids (из prepare_distillation_input, обычно text1) 
+                # и future_ids (из prepare_distillation_input, обычно text2)
+                teacher_emb_target = self.teacher_model(
+                    input_ids=context_ids, 
+                    attention_mask=context_mask,
+                    task_type="distillation_teacher_forward", # Updated task_type
+                    future_input_ids=future_ids, 
+                    future_attention_mask=future_mask
+                )
             
-            student_emb = self.model(context_ids, context_mask, task_type='distill')
-            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
-            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            # student_proj_emb_for_distill уже получено от студенческой модели выше
+            dist_loss = self.distill_loss(student_proj_emb_for_distill, teacher_emb_target)
             
             # Комбинированная потеря
             total_loss = contrastive_loss + self.args.distill_weight * dist_loss
@@ -313,8 +322,13 @@ class PSCTrainer(nn.Module):
         
         # Функция для выполнения прямого прохода
         def forward():
-            feat1, feat2, _, _ = self.model(input_ids, attention_mask, task_type='contrastive')
-            losses = self.psc_loss(feat1, feat2, pairsimi)
+            # Модель вернет: cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+            cnst_feat1, cnst_feat2, _, _ = self.model(
+                input_ids, 
+                attention_mask, 
+                task_type="contrastive_learning" # Updated task_type
+            )
+            losses = self.psc_loss(cnst_feat1, cnst_feat2, pairsimi)
             return losses, losses["instdisc_loss"]
         
         # Обработка с учетом precision
@@ -344,15 +358,23 @@ class PSCTrainer(nn.Module):
         
         # Функция для выполнения прямого прохода
         def forward():
+            # Учительская модель: получает контекст + будущее
             with torch.no_grad():
-                teacher_emb = self.teacher_model(context_ids, context_mask, 
-                                               task_type='distill',
-                                               future_input_ids=future_ids, 
-                                               future_attention_mask=future_mask)
+                teacher_emb_target = self.teacher_model(
+                    input_ids=context_ids, 
+                    attention_mask=context_mask,
+                    task_type="distillation_teacher_forward", # Updated task_type
+                    future_input_ids=future_ids, 
+                    future_attention_mask=future_mask
+                )
             
-            student_emb = self.model(context_ids, context_mask, task_type='distill')
-            student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
-            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            # Студенческая модель: получает только контекст, возвращает спроецированные эмбеддинги
+            student_proj_emb = self.model(
+                input_ids=context_ids, 
+                attention_mask=context_mask, 
+                task_type="distillation_student_forward" # Updated task_type
+            )
+            dist_loss = self.distill_loss(student_proj_emb, teacher_emb_target)
             return dist_loss
         
         # Обработка с учетом precision

@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import torch
 import torch.nn as nn
+import wandb
 
 from models.Transformers import PSCBert, PSCRoberta, PSCDistilBERT, CustomModel
 from training import PSCTrainer
@@ -17,7 +18,12 @@ import subprocess
 
     
 def run(args):
-    args.resPath, args.tensorboard = setup_path(args)
+    # Initialize wandb
+    # Replace "your-project-name" with your actual wandb project name
+    # You can also specify entity, run name, tags, etc.
+    wandb.init(project="itmo_project", config=vars(args))
+
+    args.resPath = setup_path(args)
     set_global_random_seed(args.seed)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -71,9 +77,17 @@ def run(args):
     model = nn.DataParallel(model)
     model.to(device)
     
+    # Watch the model (optional, uncomment if needed)
+    # wandb.watch(model, log="all", log_freq=args.logging_step)
+
     # set up the trainer with teacher model if using distillation
     trainer = PSCTrainer(model, tokenizer, optimizer, train_loader, args, teacher_model=teacher_model)
-    trainer.train()
+    
+    try:
+        trainer.train()
+    finally:
+        wandb.finish()
+
     return None
 
 def get_args(argv):
@@ -106,7 +120,7 @@ def get_args(argv):
     parser.add_argument('--temperature', type=float, default=0.05, help="temperature required by contrastive loss")
     parser.add_argument('--save_model_every_epoch', action='store_true', default=True, help="Whether to save model at every epoch")
     # Teacher-Student Distillation
-    parser.add_argument('--update_teacher_interval', type=int, default=4, help="Interval (in epochs) to update teacher with student parameters")
+    parser.add_argument('--update_teacher_interval', type=int, default=5, help="Interval (in epochs) to update teacher with student parameters")
     parser.add_argument('--distill_weight', type=float, default=1.0, 
                     help="Weight for distillation loss when using combined learning (1.0 means equal weight)")
 
@@ -114,7 +128,6 @@ def get_args(argv):
     args = parser.parse_args(argv)
     args.use_gpu = args.gpuid[0] >= 0
     args.resPath = None
-    args.tensorboard = None
     # Set use_distillation based on mode
     args.use_distillation = args.mode in ['distill', 'combined']
     return args

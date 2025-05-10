@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 
+
 class CustomModel(nn.Module):
     def __init__(self, model_name, num_classes=2, feat_dim=128, precision='None', is_teacher=False):
         super(CustomModel, self).__init__()
@@ -58,6 +59,15 @@ class CustomModel(nn.Module):
         mean_embeddings = torch.sum(model_output.last_hidden_state * attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
         return mean_embeddings
 
+    def _get_combined_mean_embeddings(self, input_ids_ctx, attention_mask_ctx, future_input_ids, future_attention_mask):
+        # Helper for teacher: combines context and future utterance then gets mean embeddings.
+        # Assumes inputs are tokenized segments that can be directly concatenated.
+        # Max length handling should be done upstream (dataloader/tokenizer).
+        combined_input_ids = torch.cat([input_ids_ctx, future_input_ids], dim=1)
+        combined_attention_mask = torch.cat([attention_mask_ctx, future_attention_mask], dim=1)
+        # _compute_embeddings handles the actual model call and pooling
+        return self._compute_embeddings(combined_input_ids, combined_attention_mask)
+
     def contrast_logits(self, mean_output_1, mean_output_2):
         if self.autocast_dtype:
             with autocast(device_type="cuda", dtype=self.autocast_dtype):
@@ -70,27 +80,68 @@ class CustomModel(nn.Module):
         cnst_feat2 = self.contrast_head(mean_output_2)
         return cnst_feat1, cnst_feat2
 
-    def forward(self, input_ids, attention_mask, task_type="train", future_input_ids=None, future_attention_mask=None):
+    def forward(self, input_ids, attention_mask, task_type="contrastive_learning", 
+                future_input_ids=None, future_attention_mask=None):
+
         if task_type == "evaluate":
-            return self.get_mean_embeddings(input_ids, attention_mask)
-            
-        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
-            # Teacher processes context + future
-            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
-            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
-            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
-        
-        if task_type == "distill" and not self.is_teacher:
-            # Student processes only context
+            # get_mean_embeddings handles autocast internally
             return self.get_mean_embeddings(input_ids, attention_mask)
 
-        if self.autocast_dtype:
-            with autocast(device_type="cuda", dtype=self.autocast_dtype):
-                return self._compute_forward(input_ids, attention_mask)
-        else:
+        # --- Teacher Path ---
+        if self.is_teacher:
+            if task_type != "distillation_teacher_forward":
+                raise ValueError(f"Teacher model called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward'.")
+            if future_input_ids is None or future_attention_mask is None:
+                raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+
+            if self.autocast_dtype:
+                with autocast(device_type="cuda", dtype=self.autocast_dtype):
+                    mean_embeddings_teacher = self._get_combined_mean_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                    projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+            else:
+                mean_embeddings_teacher = self._get_combined_mean_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+            return projected_teacher_emb
+
+        # --- Student Path ---
+        if task_type == "contrastive_learning":
+            # _compute_forward expects paired inputs and handles autocast internally for its main computation.
+            # It returns: cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
             return self._compute_forward(input_ids, attention_mask)
 
+        elif task_type == "distillation_student_forward":
+            # Student processes only context (input_ids provided should be the context utterance)
+            # get_mean_embeddings handles autocast for model forward pass
+            mean_embeddings_student = self.get_mean_embeddings(input_ids, attention_mask)
+            
+            if self.autocast_dtype: # distill_proj might need autocast too
+                with autocast(device_type="cuda", dtype=self.autocast_dtype):
+                    projected_student_emb = self.distill_proj(mean_embeddings_student)
+            else:
+                projected_student_emb = self.distill_proj(mean_embeddings_student)
+            return projected_student_emb
+
+        elif task_type == "combined_learning_student_forward":
+            # 1. Perform contrastive part using _compute_forward (handles autocast for its main ops)
+            #    _compute_forward expects paired input_ids.
+            #    It returns: cnst_feat1, cnst_feat2, mean_output_1 (embedding of 1st part), mean_output_2 (embedding of 2nd part)
+            cnst_feat1, cnst_feat2, mean_out1_for_distill, _ = self._compute_forward(input_ids, attention_mask)
+            
+            # 2. Use mean_out1_for_distill (embedding of the first part of the pair) for student's distillation embedding.
+            if self.autocast_dtype:
+                with autocast(device_type="cuda", dtype=self.autocast_dtype):
+                    projected_student_emb_combined = self.distill_proj(mean_out1_for_distill)
+            else:
+                projected_student_emb_combined = self.distill_proj(mean_out1_for_distill)
+                
+            return cnst_feat1, cnst_feat2, projected_student_emb_combined
+            
+        else:
+            raise ValueError(f"Unknown task_type for student: {task_type}. Supported: 'contrastive_learning', 'distillation_student_forward', 'combined_learning_student_forward'.")
+
     def _compute_forward(self, input_ids, attention_mask):
+        # This method is for contrastive learning, expecting paired inputs
+        # input_ids shape: (Batch_Size, 2, Max_Seq_Len) or (Batch_Size, Num_Turns+1, Max_Seq_Len)
         if input_ids.shape[1] == 2:
             input_ids_1, input_ids_2 = torch.unbind(input_ids, dim=1)
             attention_mask_1, attention_mask_2 = torch.unbind(attention_mask, dim=1)
@@ -144,6 +195,7 @@ class PSCBert(BertPreTrainedModel):
         self.num_classes = num_classes
         self.feat_dim = feat_dim
         self.is_teacher = is_teacher
+        self.base_model_prefix = "bert" # Added
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
@@ -153,53 +205,75 @@ class PSCBert(BertPreTrainedModel):
         # Distillation projection layer
         self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
-        if task_type == "evaluate":
-            return self.get_mean_embeddings(input_ids, attention_mask)
-            
-        elif task_type == "distill" and self.is_teacher and future_input_ids is not None:
-            # Teacher processes context + future
-            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
-            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
-            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+    def _get_raw_mean_embeddings(self, input_ids, attention_mask):
+        # Helper to get mean embeddings from the base model for a single sequence
+        base_model = getattr(self, self.base_model_prefix)
+        model_output = base_model(input_ids=input_ids, attention_mask=attention_mask)
+        last_hidden_state = model_output[0] 
         
-        elif task_type == "distill" and not self.is_teacher:
-            # Student processes only context
-            return self.get_mean_embeddings(input_ids, attention_mask)
+        expanded_attention_mask = attention_mask.unsqueeze(-1)
+        sum_embeddings = torch.sum(last_hidden_state * expanded_attention_mask, dim=1)
+        sum_mask = torch.sum(expanded_attention_mask, dim=1)
+        mean_embeddings = sum_embeddings / sum_mask
+        return mean_embeddings
+
+    def _get_teacher_combined_embeddings(self, input_ids_ctx, attention_mask_ctx, future_input_ids, future_attention_mask):
+        # Helper for teacher: combines context and future utterance then gets mean embeddings.
+        combined_input_ids = torch.cat([input_ids_ctx, future_input_ids], dim=1)
+        combined_attention_mask = torch.cat([attention_mask_ctx, future_attention_mask], dim=1)
+        return self._get_raw_mean_embeddings(combined_input_ids, combined_attention_mask)
+
+    def _get_contrastive_outputs(self, paired_input_ids, paired_attention_mask):
+        # Processes paired inputs for contrastive learning.
+        if paired_input_ids.shape[1] == 2:
+            input_ids_1, input_ids_2 = torch.unbind(paired_input_ids, dim=1)
+            attention_mask_1, attention_mask_2 = torch.unbind(paired_attention_mask, dim=1) 
+        else: # Multi-turn case
+            batch_size = paired_input_ids.shape[0]
+            input_ids_1 = paired_input_ids[:, :-1, :].reshape(batch_size, -1)
+            attention_mask_1 = paired_attention_mask[:, :-1, :].reshape(batch_size, -1)
+            input_ids_2 = paired_input_ids[:, -1, :]
+            attention_mask_2 = paired_attention_mask[:, -1, :]
+        
+        mean_output_1 = self._get_raw_mean_embeddings(input_ids_1, attention_mask_1)
+        mean_output_2 = self._get_raw_mean_embeddings(input_ids_2, attention_mask_2)
+
+        cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
+        return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+
+    def forward(self, input_ids, attention_mask, task_type, 
+                future_input_ids=None, future_attention_mask=None):        
+        
+        if task_type == "evaluate":
+            return self._get_raw_mean_embeddings(input_ids, attention_mask)
+
+        # --- Teacher Path ---
+        if self.is_teacher:
+            if task_type != "distillation_teacher_forward":
+                raise ValueError(f"Teacher model called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward'.")
+            if future_input_ids is None or future_attention_mask is None:
+                raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+            
+            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+            return projected_teacher_emb
+
+        # --- Student Path ---
+        if task_type == "contrastive_learning":
+            return self._get_contrastive_outputs(input_ids, attention_mask)
+
+        elif task_type == "distillation_student_forward":
+            mean_embeddings_student = self._get_raw_mean_embeddings(input_ids, attention_mask)
+            projected_student_emb = self.distill_proj(mean_embeddings_student)
+            return projected_student_emb
+
+        elif task_type == "combined_learning_student_forward":
+            cnst_feat1, cnst_feat2, mean_out1_for_distill, _ = self._get_contrastive_outputs(input_ids, attention_mask)
+            projected_student_emb_combined = self.distill_proj(mean_out1_for_distill)
+            return cnst_feat1, cnst_feat2, projected_student_emb_combined
             
         else:
-            '''
-            When both query and reponse are single-turn sentence, input_ids are in shape
-            Batch_Size * 2 * Max_Sequence_Length
-
-            When query is multi-turn dialogue and reponse is single-turn sentence, input_ids are in shape
-            Batch_Size * (Num_of_turn + 1) * Max_Sequence_Length
-
-            See 'prepare_pairwise_input_multiturn_concatenate()' and 'prepare_pairwise_input()' in training.py for more details
-
-            The last index of the second dimension always stands for the response, the rest stands for the query
-            '''
-            if input_ids.shape[1] == 2:
-                input_ids_1, input_ids_2 = torch.unbind(input_ids, dim=1)
-                attention_mask_1, attention_mask_2 = torch.unbind(attention_mask, dim=1) 
-            else:
-                batch_size = input_ids.shape[0]
-                input_ids_1 = input_ids[:, :-1, :].view(batch_size, -1)
-                input_ids_2 = input_ids[:, -1, :]
-                attention_mask_1 = attention_mask[:, :-1, :].view(batch_size, -1)
-                attention_mask_2 = attention_mask[:, -1, :]
-            
-
-            # mean embeddings
-            bert_output_1 = self.bert.forward(input_ids=input_ids_1, attention_mask=attention_mask_1)
-            bert_output_2 = self.bert.forward(input_ids=input_ids_2, attention_mask=attention_mask_2)
-            attention_mask_1 = attention_mask_1.unsqueeze(-1)
-            attention_mask_2 = attention_mask_2.unsqueeze(-1)
-            mean_output_1 = torch.sum(bert_output_1[0]*attention_mask_1, dim=1) / torch.sum(attention_mask_1, dim=1)
-            mean_output_2 = torch.sum(bert_output_2[0]*attention_mask_2, dim=1) / torch.sum(attention_mask_2, dim=1)
-
-            cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
-            return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+            raise ValueError(f"Unknown task_type for student: {task_type}. Supported: 'contrastive_learning', 'distillation_student_forward', 'combined_learning_student_forward'.")
             
     # pass BERT embedding through the contrastive heads to get logits
     def contrast_logits(self, embd1, embd2):
@@ -209,11 +283,8 @@ class PSCBert(BertPreTrainedModel):
 
     # calculate the embedding of an input sentence as the average embeddings of its tokens
     def get_mean_embeddings(self, input_ids, attention_mask):
-        # mean embeddings
-        bert_output = self.bert.forward(input_ids=input_ids, attention_mask=attention_mask)
-        attention_mask = attention_mask.unsqueeze(-1)
-        embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
-        return embeddings
+        # This method remains for external compatibility if needed
+        return self._get_raw_mean_embeddings(input_ids, attention_mask)
         
     def get_distill_embeddings(self, embeddings):
         """Project embeddings for distillation"""
@@ -235,6 +306,7 @@ class PSCRoberta(RobertaPreTrainedModel):
         self.num_classes = num_classes
         self.feat_dim = feat_dim
         self.is_teacher = is_teacher
+        self.base_model_prefix = "roberta" # Added
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
@@ -244,53 +316,75 @@ class PSCRoberta(RobertaPreTrainedModel):
         # Distillation projection layer
         self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
-        if task_type == "evaluate":
-            return self.get_mean_embeddings(input_ids, attention_mask)
-            
-        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
-            # Teacher processes context + future
-            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
-            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
-            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+    def _get_raw_mean_embeddings(self, input_ids, attention_mask):
+        # Helper to get mean embeddings from the base model for a single sequence
+        base_model = getattr(self, self.base_model_prefix)
+        model_output = base_model(input_ids=input_ids, attention_mask=attention_mask)
+        last_hidden_state = model_output[0] 
         
-        if task_type == "distill" and not self.is_teacher:
-            # Student processes only context
-            return self.get_mean_embeddings(input_ids, attention_mask)
+        expanded_attention_mask = attention_mask.unsqueeze(-1)
+        sum_embeddings = torch.sum(last_hidden_state * expanded_attention_mask, dim=1)
+        sum_mask = torch.sum(expanded_attention_mask, dim=1)
+        mean_embeddings = sum_embeddings / sum_mask
+        return mean_embeddings
+
+    def _get_teacher_combined_embeddings(self, input_ids_ctx, attention_mask_ctx, future_input_ids, future_attention_mask):
+        # Helper for teacher: combines context and future utterance then gets mean embeddings.
+        combined_input_ids = torch.cat([input_ids_ctx, future_input_ids], dim=1)
+        combined_attention_mask = torch.cat([attention_mask_ctx, future_attention_mask], dim=1)
+        return self._get_raw_mean_embeddings(combined_input_ids, combined_attention_mask)
+
+    def _get_contrastive_outputs(self, paired_input_ids, paired_attention_mask):
+        # Processes paired inputs for contrastive learning.
+        if paired_input_ids.shape[1] == 2:
+            input_ids_1, input_ids_2 = torch.unbind(paired_input_ids, dim=1)
+            attention_mask_1, attention_mask_2 = torch.unbind(paired_attention_mask, dim=1) 
+        else: # Multi-turn case
+            batch_size = paired_input_ids.shape[0]
+            input_ids_1 = paired_input_ids[:, :-1, :].reshape(batch_size, -1)
+            attention_mask_1 = paired_attention_mask[:, :-1, :].reshape(batch_size, -1)
+            input_ids_2 = paired_input_ids[:, -1, :]
+            attention_mask_2 = paired_attention_mask[:, -1, :]
+        
+        mean_output_1 = self._get_raw_mean_embeddings(input_ids_1, attention_mask_1)
+        mean_output_2 = self._get_raw_mean_embeddings(input_ids_2, attention_mask_2)
+
+        cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
+        return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+        
+    def forward(self, input_ids, attention_mask, task_type, 
+                future_input_ids=None, future_attention_mask=None):        
+        
+        if task_type == "evaluate":
+            return self._get_raw_mean_embeddings(input_ids, attention_mask)
+
+        # --- Teacher Path ---
+        if self.is_teacher:
+            if task_type != "distillation_teacher_forward":
+                raise ValueError(f"Teacher model called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward'.")
+            if future_input_ids is None or future_attention_mask is None:
+                raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+            
+            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+            return projected_teacher_emb
+
+        # --- Student Path ---
+        if task_type == "contrastive_learning":
+            return self._get_contrastive_outputs(input_ids, attention_mask)
+
+        elif task_type == "distillation_student_forward":
+            mean_embeddings_student = self._get_raw_mean_embeddings(input_ids, attention_mask)
+            projected_student_emb = self.distill_proj(mean_embeddings_student)
+            return projected_student_emb
+
+        elif task_type == "combined_learning_student_forward":
+            cnst_feat1, cnst_feat2, mean_out1_for_distill, _ = self._get_contrastive_outputs(input_ids, attention_mask)
+            projected_student_emb_combined = self.distill_proj(mean_out1_for_distill)
+            return cnst_feat1, cnst_feat2, projected_student_emb_combined
             
         else:
-            '''
-            When both query and reponse are single-turn sentence, input_ids are in shape
-            Batch_Size * 2 * Max_Sequence_Length
-
-            When query is multi-turn dialogue and reponse is single-turn sentence, input_ids are in shape
-            Batch_Size * (Num_of_turn + 1) * Max_Sequence_Length
-
-            See 'prepare_pairwise_input_multiturn_concatenate()' and 'prepare_pairwise_input()' in training.py for more details
-
-            The last index of the second dimension always stands for the response, the rest stands for the query
-            '''
-            if input_ids.shape[1] == 2:
-                input_ids_1, input_ids_2 = torch.unbind(input_ids, dim=1)
-                attention_mask_1, attention_mask_2 = torch.unbind(attention_mask, dim=1) 
-            else:
-                batch_size = input_ids.shape[0]
-                input_ids_1 = input_ids[:, :-1, :].view(batch_size, -1)
-                input_ids_2 = input_ids[:, -1, :]
-                attention_mask_1 = attention_mask[:, :-1, :].view(batch_size, -1)
-                attention_mask_2 = attention_mask[:, -1, :]
-            
-
-            # mean embeddings
-            bert_output_1 = self.roberta.forward(input_ids=input_ids_1, attention_mask=attention_mask_1)
-            bert_output_2 = self.roberta.forward(input_ids=input_ids_2, attention_mask=attention_mask_2)
-            attention_mask_1 = attention_mask_1.unsqueeze(-1)
-            attention_mask_2 = attention_mask_2.unsqueeze(-1)
-            mean_output_1 = torch.sum(bert_output_1[0]*attention_mask_1, dim=1) / torch.sum(attention_mask_1, dim=1)
-            mean_output_2 = torch.sum(bert_output_2[0]*attention_mask_2, dim=1) / torch.sum(attention_mask_2, dim=1)
-
-            cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
-            return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+            raise ValueError(f"Unknown task_type for student: {task_type}. Supported: 'contrastive_learning', 'distillation_student_forward', 'combined_learning_student_forward'.")
             
     # pass BERT embedding through the contrastive heads to get logits
     def contrast_logits(self, embd1, embd2):
@@ -300,11 +394,8 @@ class PSCRoberta(RobertaPreTrainedModel):
 
     # calculate the embedding of an input sentence as the average embeddings of its tokens
     def get_mean_embeddings(self, input_ids, attention_mask):
-        # mean embeddings
-        bert_output = self.roberta.forward(input_ids=input_ids, attention_mask=attention_mask)
-        attention_mask = attention_mask.unsqueeze(-1)
-        embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
-        return embeddings
+        # This method remains for external compatibility if needed
+        return self._get_raw_mean_embeddings(input_ids, attention_mask)
         
     def get_distill_embeddings(self, embeddings):
         """Project embeddings for distillation"""
@@ -326,6 +417,7 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
         self.num_classes = num_classes
         self.feat_dim = feat_dim
         self.is_teacher = is_teacher
+        self.base_model_prefix = "distilbert" # Added
 
         self.contrast_head = nn.Sequential(
             nn.Linear(self.emb_size, self.emb_size, bias=False),
@@ -335,53 +427,76 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
         # Distillation projection layer
         self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
         
-    def forward(self, input_ids, attention_mask, task_type, future_input_ids=None, future_attention_mask=None):        
-        if task_type == "evaluate":
-            return self.get_mean_embeddings(input_ids, attention_mask)
-            
-        if task_type == "distill" and self.is_teacher and future_input_ids is not None:
-            # Teacher processes context + future
-            combined_input_ids = torch.cat([input_ids, future_input_ids], dim=1)
-            combined_attention_mask = torch.cat([attention_mask, future_attention_mask], dim=1)
-            return self.get_mean_embeddings(combined_input_ids, combined_attention_mask)
+    def _get_raw_mean_embeddings(self, input_ids, attention_mask):
+        # Helper to get mean embeddings from the base model for a single sequence
+        base_model = getattr(self, self.base_model_prefix)
+        # DistilBertModel output is a tuple, last_hidden_state is the first element
+        model_output = base_model(input_ids=input_ids, attention_mask=attention_mask)
+        last_hidden_state = model_output[0] 
         
-        if task_type == "distill" and not self.is_teacher:
-            # Student processes only context
-            return self.get_mean_embeddings(input_ids, attention_mask)
+        expanded_attention_mask = attention_mask.unsqueeze(-1)
+        sum_embeddings = torch.sum(last_hidden_state * expanded_attention_mask, dim=1)
+        sum_mask = torch.sum(expanded_attention_mask, dim=1)
+        mean_embeddings = sum_embeddings / sum_mask
+        return mean_embeddings
+
+    def _get_teacher_combined_embeddings(self, input_ids_ctx, attention_mask_ctx, future_input_ids, future_attention_mask):
+        # Helper for teacher: combines context and future utterance then gets mean embeddings.
+        combined_input_ids = torch.cat([input_ids_ctx, future_input_ids], dim=1)
+        combined_attention_mask = torch.cat([attention_mask_ctx, future_attention_mask], dim=1)
+        return self._get_raw_mean_embeddings(combined_input_ids, combined_attention_mask)
+
+    def _get_contrastive_outputs(self, paired_input_ids, paired_attention_mask):
+        # Processes paired inputs for contrastive learning.
+        if paired_input_ids.shape[1] == 2:
+            input_ids_1, input_ids_2 = torch.unbind(paired_input_ids, dim=1)
+            attention_mask_1, attention_mask_2 = torch.unbind(paired_attention_mask, dim=1) 
+        else: # Multi-turn case
+            batch_size = paired_input_ids.shape[0]
+            input_ids_1 = paired_input_ids[:, :-1, :].reshape(batch_size, -1)
+            attention_mask_1 = paired_attention_mask[:, :-1, :].reshape(batch_size, -1)
+            input_ids_2 = paired_input_ids[:, -1, :]
+            attention_mask_2 = paired_attention_mask[:, -1, :]
+        
+        mean_output_1 = self._get_raw_mean_embeddings(input_ids_1, attention_mask_1)
+        mean_output_2 = self._get_raw_mean_embeddings(input_ids_2, attention_mask_2)
+
+        cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
+        return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+
+    def forward(self, input_ids, attention_mask, task_type, 
+                future_input_ids=None, future_attention_mask=None):        
+        
+        if task_type == "evaluate":
+            return self._get_raw_mean_embeddings(input_ids, attention_mask)
+
+        # --- Teacher Path ---
+        if self.is_teacher:
+            if task_type != "distillation_teacher_forward":
+                raise ValueError(f"Teacher model called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward'.")
+            if future_input_ids is None or future_attention_mask is None:
+                raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+            
+            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+            return projected_teacher_emb
+
+        # --- Student Path ---
+        if task_type == "contrastive_learning":
+            return self._get_contrastive_outputs(input_ids, attention_mask)
+
+        elif task_type == "distillation_student_forward":
+            mean_embeddings_student = self._get_raw_mean_embeddings(input_ids, attention_mask)
+            projected_student_emb = self.distill_proj(mean_embeddings_student)
+            return projected_student_emb
+
+        elif task_type == "combined_learning_student_forward":
+            cnst_feat1, cnst_feat2, mean_out1_for_distill, _ = self._get_contrastive_outputs(input_ids, attention_mask)
+            projected_student_emb_combined = self.distill_proj(mean_out1_for_distill)
+            return cnst_feat1, cnst_feat2, projected_student_emb_combined
             
         else:
-            '''
-            When both query and reponse are single-turn sentence, input_ids are in shape
-            Batch_Size * 2 * Max_Sequence_Length
-
-            When query is multi-turn dialogue and reponse is single-turn sentence, input_ids are in shape
-            Batch_Size * (Num_of_turn + 1) * Max_Sequence_Length
-
-            See 'prepare_pairwise_input_multiturn_concatenate()' and 'prepare_pairwise_input()' in training.py for more details
-
-            The last index of the second dimension always stands for the response, the rest stands for the query
-            '''
-            if input_ids.shape[1] == 2:
-                input_ids_1, input_ids_2 = torch.unbind(input_ids, dim=1)
-                attention_mask_1, attention_mask_2 = torch.unbind(attention_mask, dim=1) 
-            else:
-                batch_size = input_ids.shape[0]
-                input_ids_1 = input_ids[:, :-1, :].view(batch_size, -1)
-                input_ids_2 = input_ids[:, -1, :]
-                attention_mask_1 = attention_mask[:, :-1, :].view(batch_size, -1)
-                attention_mask_2 = attention_mask[:, -1, :]
-            
-
-            # mean embeddings
-            bert_output_1 = self.distilbert.forward(input_ids=input_ids_1, attention_mask=attention_mask_1)
-            bert_output_2 = self.distilbert.forward(input_ids=input_ids_2, attention_mask=attention_mask_2)
-            attention_mask_1 = attention_mask_1.unsqueeze(-1)
-            attention_mask_2 = attention_mask_2.unsqueeze(-1)
-            mean_output_1 = torch.sum(bert_output_1[0]*attention_mask_1, dim=1) / torch.sum(attention_mask_1, dim=1)
-            mean_output_2 = torch.sum(bert_output_2[0]*attention_mask_2, dim=1) / torch.sum(attention_mask_2, dim=1)
-
-            cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
-            return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+            raise ValueError(f"Unknown task_type for student: {task_type}. Supported: 'contrastive_learning', 'distillation_student_forward', 'combined_learning_student_forward'.")
             
     # pass BERT embedding through the contrastive heads to get logits
     def contrast_logits(self, embd1, embd2):
@@ -391,11 +506,8 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
 
     # calculate the embedding of an input sentence as the average embeddings of its tokens
     def get_mean_embeddings(self, input_ids, attention_mask):
-        # mean embeddings
-        bert_output = self.distilbert.forward(input_ids=input_ids, attention_mask=attention_mask)
-        attention_mask = attention_mask.unsqueeze(-1)
-        embeddings = torch.sum(bert_output[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
-        return embeddings
+        # This method remains for external compatibility if needed
+        return self._get_raw_mean_embeddings(input_ids, attention_mask)
         
     def get_distill_embeddings(self, embeddings):
         """Project embeddings for distillation"""
