@@ -234,7 +234,7 @@ class PSCTrainer(nn.Module):
                     
                     losses = self.train_contrastive(input_ids, attention_mask, pairsimi)
 
-                statistics_log(self.args.tensorboard, losses=losses, global_step=self.gstep)
+                statistics_log(losses=losses, global_step=self.gstep)
 
                 if self.gstep > self.args.max_iter:
                     break
