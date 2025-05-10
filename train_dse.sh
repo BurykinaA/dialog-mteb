@@ -1,6 +1,6 @@
 export DATA_DIR=/home/coder/project/data/data_todbert_pretrain
 export FILE_NAME="dse_training.tsv"
-export OUTPUT_DIR=/home/coder/project/metrics
+export OUTPUT_DIR=/home/coder/project/distilation_head_bertbase
 export MODEL_TYPE=bertbase #dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
 cd pretrain
 
@@ -32,7 +32,7 @@ python main.py \
     --resdir ${OUTPUT_DIR} \
     --datapath ${DATA_DIR} \
     --dataname dse_training.tsv \
-    --mode combined \
+    --mode distill \
     --bert ${MODEL_TYPE} \
     --contrast_type HardNeg \
     --lr 3e-06 \
