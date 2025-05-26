@@ -1,7 +1,12 @@
-MODEL_DIR=$1
-model_name=$2
-DATA_DIR=$3
-OUTPUT_DIR=$4
+# MODEL_DIR=$1
+# model_name=$2
+# DATA_DIR=$3
+# OUTPUT_DIR=$4
+
+MODEL_DIR='.'
+model_name='contrastive_bertbasecontrastive.HardNeg.epoch15.bertbase.dse_training.tsv.lr3e-06.lrscale100.bs512.tmp0.05.decay1.seed1.turn1/15'
+DATA_DIR='data/_downstream_data'
+OUTPUT_DIR='metrics_contrastive'
 
 
 python evaluate/run_similarity.py \

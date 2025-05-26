@@ -28,7 +28,7 @@ record all the experimental results at 'output_dir'
 def eval_intent_classification_with_prototypical_net(model, tokenizer, model_dir, data_root_dir, output_dir='results/intent', task_type='average_embedding', num_runs=10, max_seq_length=50):
     print("\n\n Evaluating intent classification")
 
-    datasets = ['appen_asr', 'appen_human', 'clinc150', 'bank77', 'snips', 'hwu64']
+    datasets = ['clinc150', 'bank77', 'snips', 'hwu64'] #'appen_asr', 'appen_human', 
 
     for dataset in datasets:
         for data_ratio in [1, 5]:
