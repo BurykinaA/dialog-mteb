@@ -123,6 +123,12 @@ def get_args(argv):
     parser.add_argument('--update_teacher_interval', type=int, default=5, help="Interval (in epochs) to update teacher with student parameters")
     parser.add_argument('--distill_weight', type=float, default=1.0, 
                     help="Weight for distillation loss when using combined learning (1.0 means equal weight)")
+    
+    # Arguments for FutureTOD based on paper
+    parser.add_argument('--num_distill_layers', type=int, default=12, 
+                        help="Number of BERT layers to use for distillation (FutureTOD default: 12)")
+    parser.add_argument('--mlm_probability', type=float, default=0.15, 
+                        help="Probability of masking tokens for MLM (FutureTOD default: 0.15)")
 
     
     args = parser.parse_args(argv)
