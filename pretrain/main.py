@@ -30,20 +30,22 @@ def run(args):
     device_id = torch.cuda.device_count()
     print("\t {} GPUs available to use!".format(device_id))
 
+    # Initialize tokenizer first, as it's needed by the dataloader for MLM
+    config, tokenizer = get_bert_config_tokenizer(args.bert)
+
     '''
     We assume paired training data (e.g., NLI data) is always saved in csv/tsv format,
     and single training data (e.g., wiki) is always saved in txt format.
     '''
     if args.dataname.endswith(".csv") or args.dataname.endswith(".tsv"):
-        train_loader = pair_loader_csv(args)
+        train_loader = pair_loader_csv(args, tokenizer)
     elif args.dataname.endswith(".txt"):
-        train_loader = pair_loader_txt(args)
+        train_loader = pair_loader_txt(args, tokenizer)
     else:
-        return ValueError()
+        raise ValueError(f"Unsupported data file extension: {args.dataname}. Please use .csv, .tsv, or .txt.")
     
 
     # model & optimizer
-    config, tokenizer = get_bert_config_tokenizer(args.bert)
     
     # Initialize student model
     if 'roberta' in args.bert:
