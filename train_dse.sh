@@ -1,6 +1,6 @@
 export DATA_DIR=/home/coder/project/data/data_todbert_pretrain
 export FILE_NAME="dse_training_short.tsv"
-export OUTPUT_DIR=/home/coder/project/futuretod_bertbase_pretrain
+export OUTPUT_DIR=/home/coder/project/short_futuretod_bertbase_pretrain
 export MODEL_TYPE=bertbase #dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
 cd pretrain
 
@@ -54,7 +54,8 @@ python main.py \
     --save_model_every_epoch \
     --update_teacher_interval 10 \
     --num_distill_layers 9 \
-    --mlm_probability 0.15 \
+    --mlm_probability 0.15 
+    
     # --dropout 0.2 # Add if your main.py uses this to set model config dropout
 
     # Contrastive specific (only if mode is 'combined' or 'contrastive'):
