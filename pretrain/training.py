@@ -105,13 +105,13 @@ class PSCTrainer(nn.Module):
 
         # Inputs for teacher (Context + Future)
         # batch['text1'] is a list of context strings
-        # batch['text_future'] is a list of future utterance strings (already concatenated)
+        # batch['text2'] (originally 'text_future') is a list of future utterance strings
         
         # --- Prepare inputs for Teacher (Context + Future) ---
         teacher_text_pairs = []
         for i in range(len(batch['text1'])):
             context_str = batch['text1'][i]
-            future_str = batch['text_future'][i]
+            future_str = batch['text2'][i] # Corrected to use 'text2' as per typical dataloader output
             teacher_text_pairs.append((context_str, future_str))
 
         teacher_inputs_tokenized = self.tokenizer(
