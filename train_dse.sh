@@ -1,6 +1,6 @@
 export DATA_DIR=/home/coder/project/data/data_todbert_pretrain
-export FILE_NAME="dse_training.tsv"
-export OUTPUT_DIR=/home/coder/project/contrastive_bertbase
+export FILE_NAME="dse_training_short.tsv"
+export OUTPUT_DIR=/home/coder/project/short_contrastive_bertbase
 export MODEL_TYPE=bertbase #dunzhang/stella_en_400M_v5 # choose from [bertbase, bertlarge, robertabase, robertalarge, distilbertbase]
 cd pretrain
 
@@ -31,14 +31,14 @@ cd pretrain
 python main.py \
     --resdir ${OUTPUT_DIR} \
     --datapath ${DATA_DIR} \
-    --dataname dse_training.tsv \
+    --dataname dse_training_short.tsv \
     --mode contrastive \
     --bert ${MODEL_TYPE} \
     --contrast_type HardNeg \
     --lr 3e-06 \
     --lr_scale 100 \
     --batch_size 1024 \
-    --max_length 32 \
+    --max_length 60 \
     --temperature 0.05 \
     --epochs 15 \
     --mixed_precision None --max_iter 10000000 \

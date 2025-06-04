@@ -29,10 +29,20 @@ class PSCTrainer(nn.Module):
         self.task_type = self.args.mode
         self.gstep = 0
         self.dev_objective = -1
-        
+        self.device = torch.device("cuda")
         self.psc_loss = HardConLoss(temperature=self.args.temperature, contrast_type=self.args.contrast_type).cuda()
         self.classify_loss = nn.CrossEntropyLoss().cuda()
         self.distill_loss = nn.MSELoss().cuda()  # Distillation loss
+
+
+        # Буферы для EWMA (экспоненциально взвешенного скользящего среднего) лоссов
+        self.running_c_loss = torch.zeros(1, device='cuda')
+        self.running_d_loss = torch.zeros(1, device='cuda')
+        self.momentum = 0.9  # коэффициент для EWMA
+
+        # Небольшая эпсилон, чтобы не делить на ноль
+        self.eps = 1e-8
+
         
         # For FutureTOD algorithm
         self.use_distillation = self.args.use_distillation
@@ -253,52 +263,56 @@ class PSCTrainer(nn.Module):
         return None
 
     def train_combined(self, contrastive_input_ids, contrastive_attention_mask, pairsimi,
-                      context_ids, context_mask, future_ids, future_mask):
-        """Обучение с комбинированием контрастивного обучения и дистилляции"""
+                       context_ids, context_mask, future_ids, future_mask):
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
-        
-        # Функция для выполнения прямого и обратного прохода
+
         def forward_backward():
-            # Контрастивная часть + Студенческая часть дистилляции
-            # Модель вернет: cnst_feat1, cnst_feat2, projected_student_emb_for_distill
+            # 1) контрастивная часть
             cnst_feat1, cnst_feat2, student_proj_emb_for_distill = self.model(
-                input_ids=contrastive_input_ids, 
-                attention_mask=contrastive_attention_mask, 
-                task_type="combined_learning_student_forward" # Updated task_type
+                input_ids=contrastive_input_ids.to(self.device),
+                attention_mask=contrastive_attention_mask.to(self.device),
+                task_type="combined_learning_student_forward"
             )
-            contrastive_losses = self.psc_loss(cnst_feat1, cnst_feat2, pairsimi)
-            contrastive_loss = contrastive_losses["instdisc_loss"]
-            
-            # Дистилляционная часть - Учитель
+            contrastive_losses = self.psc_loss(cnst_feat1, cnst_feat2, pairsimi.to(self.device))
+            contrastive_loss = contrastive_losses["instdisc_loss"]  # уже на self.device
+
+            # 2) дистилляционная часть: учитель
             with torch.no_grad():
-                # Учитель обрабатывает context_ids (из prepare_distillation_input, обычно text1) 
-                # и future_ids (из prepare_distillation_input, обычно text2)
                 teacher_emb_target = self.teacher_model(
-                    input_ids=context_ids, 
-                    attention_mask=context_mask,
-                    task_type="distillation_teacher_forward", # Updated task_type
-                    future_input_ids=future_ids, 
-                    future_attention_mask=future_mask
+                    input_ids=context_ids.to(self.device),
+                    attention_mask=context_mask.to(self.device),
+                    task_type="distillation_teacher_forward",
+                    future_input_ids=future_ids.to(self.device),
+                    future_attention_mask=future_mask.to(self.device)
                 )
-            
-            # student_proj_emb_for_distill уже получено от студенческой модели выше
             dist_loss = self.distill_loss(student_proj_emb_for_distill, teacher_emb_target)
-            
-            # Комбинированная потеря
-            total_loss = contrastive_loss + self.args.distill_weight * dist_loss
-            
-            return total_loss, contrastive_loss, dist_loss
-        
-        # Обработка с учетом precision
+
+            # Обновляем EWMA (без градиента). Все тензоры на self.device.
+            with torch.no_grad():
+                self.running_c_loss.mul_(self.momentum).add_(
+                    contrastive_loss.detach() * (1 - self.momentum)
+                )
+                self.running_d_loss.mul_(self.momentum).add_(
+                    dist_loss.detach() * (1 - self.momentum)
+                )
+
+            # Считаем коэффициент (тоже тензор на self.device)
+            coeff = (self.running_c_loss + self.eps) / (self.running_d_loss + self.eps)
+
+            # Комбинированный лосс
+            total_loss = contrastive_loss + self.args.distill_weight * coeff * dist_loss
+            return total_loss, contrastive_loss, dist_loss, coeff
+
+        # Собственно шаг оптимизации
         if not use_mixed_precision:
-            total_loss, contrastive_loss, dist_loss = forward_backward()
+            total_loss, contrastive_loss, dist_loss, coeff = forward_backward()
             total_loss.backward()
             self.optimizer.step()
         else:
+            from torch.cuda.amp import autocast
             with autocast(device_type="cuda", dtype=dtype):
-                total_loss, contrastive_loss, dist_loss = forward_backward()
-                
+                total_loss, contrastive_loss, dist_loss, coeff = forward_backward()
             if self.args.mixed_precision == "fp16":
                 self.scaler.scale(total_loss).backward()
                 self.scaler.step(self.optimizer)
@@ -306,12 +320,13 @@ class PSCTrainer(nn.Module):
             else:  # bf16
                 total_loss.backward()
                 self.optimizer.step()
-        
+
         self.optimizer.zero_grad()
-        
+
         return {
             "instdisc_loss": contrastive_loss.item(),
             "distill_loss": dist_loss.item(),
+            "coeff": coeff.item(),
             "total_loss": total_loss.item()
         }
 
