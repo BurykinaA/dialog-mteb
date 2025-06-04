@@ -101,30 +101,39 @@ class PSCTrainer(nn.Module):
         """
         Prepare inputs for distillation.
         Student receives MLM-processed context.
-        Teacher receives raw context + raw future.
+        Teacher receives raw context + raw future, tokenized as a pair.
         """
-        # Raw text for teacher and other potential uses (batch is a list of strings)
-        teacher_context_text_batch = batch['text1'] 
-        future_text_batch = batch['text2']
+        # Raw text for preparing teacher inputs
+        raw_context_texts = batch['text1'] # List of context strings
+        raw_future_texts = batch['text2']  # List of future strings
         
         # MLM related inputs are already batched tensors from DataLoader collation
         student_mlm_input_ids = batch['context_mlm_input_ids'].to(self.device)
         student_mlm_attention_mask = batch['context_mlm_attention_mask'].to(self.device)
         mlm_labels = batch['context_mlm_labels'].to(self.device)
 
-        # Tokenize raw context text for the teacher model (unmasked)
-        teacher_context_feat = self.get_batch_token(teacher_context_text_batch, max_length=self.args.max_length)
-        teacher_context_ids = teacher_context_feat['input_ids'].to(self.device)
-        teacher_context_mask = teacher_context_feat['attention_mask'].to(self.device)
+        # Prepare teacher inputs: Tokenize (context, future) as pairs
+        # The tokenizer should handle [CLS] context [SEP] future [SEP] structure and token_type_ids
+        teacher_paired_inputs = self.tokenizer.batch_encode_plus(
+            list(zip(raw_context_texts, raw_future_texts)), # List of (context, future) string pairs
+            max_length=self.args.max_length, # Ensure this max_length is for the combined sequence
+            return_tensors='pt',
+            padding='max_length',
+            truncation=True,
+            return_token_type_ids=True # Important for BERT-like models
+        )
         
-        # Tokenize raw future text for the teacher model
-        future_feat = self.get_batch_token(future_text_batch, max_length=self.args.max_length) # Or a different max_length for future if needed
-        future_ids = future_feat['input_ids'].to(self.device)
-        future_mask = future_feat['attention_mask'].to(self.device)
-        
+        teacher_combined_input_ids = teacher_paired_inputs['input_ids'].to(self.device)
+        teacher_combined_attention_mask = teacher_paired_inputs['attention_mask'].to(self.device)
+        teacher_combined_token_type_ids = teacher_paired_inputs['token_type_ids'].to(self.device) # Get token_type_ids
+
+        # Student's context for CLS embeddings (if model needs unmasked version for CLS state, not used by FutureTOD directly with this setup)
+        # For FutureTOD, student's CLS embeddings come from the MLM forward pass.
+        # The teacher_context_ids and teacher_context_mask as previously defined are no longer needed
+        # if the teacher input is now combined_ids.
+
         return student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
-               teacher_context_ids, teacher_context_mask, \
-               future_ids, future_mask
+               teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids
     
     def train_distillation_step(self, context_ids, context_mask, future_ids, future_mask):
         """Perform a distillation training step"""
@@ -237,28 +246,26 @@ class PSCTrainer(nn.Module):
                     
                     # Подготовка данных для дистилляции
                     student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
-                    teacher_context_ids, teacher_context_mask, \
-                    future_ids, future_mask = self.prepare_distillation_input(batch)
+                    teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids = \
+                        self.prepare_distillation_input(batch)
                     
                     # Обучение с комбинированными данными
                     losses = self.train_combined(
                         contrastive_input_ids, contrastive_attention_mask, pairsimi,
                         student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
-                        teacher_context_ids, teacher_context_mask,
-                        future_ids, future_mask
+                        teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids
                     )
                     
                 elif self.args.mode == 'distill':
                     # Подготовка данных для дистилляции
                     student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
-                    teacher_context_ids, teacher_context_mask, \
-                    future_ids, future_mask = self.prepare_distillation_input(batch)
+                    teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids = \
+                        self.prepare_distillation_input(batch)
                     
                     # Обучение с дистилляцией (Ldis) и MLM (Lmlm) согласно FutureTOD
                     losses = self.train_distillation(
                         student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
-                        teacher_context_ids, teacher_context_mask,
-                        future_ids, future_mask
+                        teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids
                     )
                     
                 elif self.args.mode == 'contrastive':
@@ -297,8 +304,7 @@ class PSCTrainer(nn.Module):
 
     def train_combined(self, contrastive_input_ids, contrastive_attention_mask, pairsimi,
                        student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
-                       teacher_context_ids, teacher_context_mask,
-                       future_ids, future_mask):
+                       teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids):
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
 
@@ -352,11 +358,11 @@ class PSCTrainer(nn.Module):
             # Модель должна вернуть (teacher_cls_hidden_states_list)
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
-                    input_ids=teacher_context_ids.to(self.device), # Use teacher_context_ids
-                    attention_mask=teacher_context_mask.to(self.device), # Use teacher_context_mask
-                    task_type="teacher_distill", 
-                    future_input_ids=future_ids.to(self.device),
-                    future_attention_mask=future_mask.to(self.device)
+                    input_ids=teacher_combined_input_ids.to(self.device), 
+                    attention_mask=teacher_combined_attention_mask.to(self.device),
+                    token_type_ids=teacher_combined_token_type_ids.to(self.device), # Pass token_type_ids
+                    task_type="teacher_distill"
+                    # future_input_ids and future_attention_mask are no longer needed here
                 )
 
             # Расчет Ldis (сумма MSE по слоям)
@@ -445,8 +451,7 @@ class PSCTrainer(nn.Module):
         return losses
 
     def train_distillation(self, student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
-                           teacher_context_ids, teacher_context_mask,
-                           future_ids, future_mask):
+                           teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids):
         """Обучение с дистилляцией (Ldis) и MLM (Lmlm) согласно FutureTOD"""
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
@@ -466,14 +471,14 @@ class PSCTrainer(nn.Module):
             if mlm_labels is None and student_mlm_loss is None: 
                 student_mlm_loss = torch.tensor(0.0, device=self.device)
 
-            # Учитель (контекст C + будущее F, необработанные) -> многослойные CLS эмбеддинги
+            # Учитель (контекст C + будущее F, УЖЕ КОМБИНИРОВАННЫЕ) -> многослойные CLS эмбеддинги
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
-                    input_ids=teacher_context_ids.to(self.device), 
-                    attention_mask=teacher_context_mask.to(self.device),
-                    task_type="teacher_distill", 
-                    future_input_ids=future_ids.to(self.device), 
-                    future_attention_mask=future_mask.to(self.device)
+                    input_ids=teacher_combined_input_ids.to(self.device), 
+                    attention_mask=teacher_combined_attention_mask.to(self.device),
+                    token_type_ids=teacher_combined_token_type_ids.to(self.device), # Pass token_type_ids
+                    task_type="teacher_distill"
+                    # future_input_ids and future_attention_mask are no longer needed here
                 )
             
             # Расчет Ldis (сумма MSE по слоям)

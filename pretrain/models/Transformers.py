@@ -95,43 +95,15 @@ class CustomModel(nn.Module):
         return cnst_feat1, cnst_feat2
 
     def _prepare_teacher_input_ids_and_mask(self, context_ids, context_mask, future_ids, future_mask, tokenizer):
-        # Simplified: assumes context_ids and future_ids are raw tokens without CLS/SEP initially
-        # and that they need to be combined as CLS context SEP future SEP
-        # This needs to be robust and align with how PSCTrainer.get_batch_token tokenizes.
-        # PSCTrainer.get_batch_token adds CLS and SEP.
-        # So, we need to strip them from individual parts if present, then re-combine.
-        # This is a complex step and might need access to tokenizer.
-        # For now, a very naive direct concatenation assuming PSCTrainer's get_batch_token is modified or this is handled upstream.
-        # A truly robust way:
-        # 1. Decode context_ids and future_ids (per batch item).
-        # 2. Create pairs of (context_str, future_str).
-        # 3. Re-tokenize using tokenizer.batch_encode_plus(list_of_pairs, ... return_tensors='pt').
-        # This is too complex to implement here without tokenizer access and changing batch processing.
-
-        # Tentative placeholder assuming context_ids and future_ids are full sequences from get_batch_token
-        # This will likely result in [CLS] ctx [SEP] [CLS] fut [SEP] if not handled carefully.
-        # For multi-layer CLS, we need token_type_ids.
-        
-        # Let's assume for this sketch that the trainer passes the tokenizer for this step,
-        # or this logic is refined to handle pre-tokenized inputs from get_batch_token.
-        # For now, direct concat for length estimation, actual tokenization logic is deferred.
-        
-        # This function is NOT used by the CustomModel's new teacher_distill path below,
-        # as that path will expect inputs already prepared by the trainer OR do it internally.
-        # The current _get_combined_mean_embeddings is also a simple cat for the OLD logic.
-        # For the NEW logic, we assume the base model's forward handles combined inputs if prepared correctly.
-        # For simplicity, the teacher for CustomModel will also use _get_combined_mean_embeddings
-        # and then extract CLS from layers, if its self.model supports output_hidden_states.
-
-        # This is a placeholder for the _actual_ combination logic if you were to do it inside the model
-        # For CustomModel, the below teacher path assumes combined inputs are handled by self.model correctly
-        # if it's a BERT-like model.
+        # This method is now REMOVED / NO LONGER USED by model's forward.
+        # Preparation is done in PSCTrainer.prepare_distillation_input
         pass
-
 
     def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None,
                 task_type="contrastive_learning", 
-                future_input_ids=None, future_attention_mask=None):
+                future_input_ids=None, # Kept for old task types, but not for new "teacher_distill"
+                future_attention_mask=None # Kept for old task types
+                ):
 
         if task_type == "evaluate":
             # get_mean_embeddings handles autocast internally
@@ -141,37 +113,15 @@ class CustomModel(nn.Module):
         # --- New FutureTOD-aligned Teacher Path for CustomModel ---
         if task_type == "teacher_distill":
             if self.is_teacher:
-                if future_input_ids is None or future_attention_mask is None:
-                    raise ValueError("Teacher model in 'teacher_distill' mode requires future_input_ids and future_attention_mask.")
-                
-                # For CustomModel, we rely on its self.model to handle combined inputs if it's BERT-like.
-                # The PSCTrainer's prepare_distillation_input passes separate teacher_context_ids and future_ids.
-                # The teacher model call in trainer passes them as input_ids and future_input_ids.
-                # Here, we need to combine them.
-                # This combination is tricky and should ideally mirror how BERT handles segment pairs.
-                # A simple concatenation might not be enough.
-                # For now, let's assume a simplified concatenation and that self.model can process it.
-                # THIS IS A MAJOR SIMPLIFICATION FOR CustomModel.
-                # A robust solution would involve using the tokenizer here if available or ensuring
-                # PSCTrainer prepares a single combined sequence for the teacher.
+                # Teacher now expects combined input_ids, attention_mask, and token_type_ids
+                # future_input_ids and future_attention_mask are NOT used here.
 
-                combined_input_ids = torch.cat([input_ids, future_input_ids[:, 1:]], dim=1) # Naive: strip CLS from future
-                combined_attention_mask = torch.cat([attention_mask, future_attention_mask[:, 1:]], dim=1)
-                # Truncate if necessary
-                max_len = self.config.max_position_embeddings if hasattr(self.config, 'max_position_embeddings') else 512
-                if combined_input_ids.size(1) > max_len:
-                    combined_input_ids = combined_input_ids[:, :max_len]
-                    combined_attention_mask = combined_attention_mask[:, :max_len]
-                
-                # Token type IDs (simplistic)
-                current_token_type_ids = torch.zeros_like(combined_input_ids)
-                if input_ids.shape[1] < combined_input_ids.shape[1]: # if future_input_ids had content
-                    current_token_type_ids[:, input_ids.shape[1]:] = 1
-
-
-                model_kwargs = {'input_ids': combined_input_ids, 'attention_mask': combined_attention_mask}
+                model_kwargs = {'input_ids': input_ids, 'attention_mask': attention_mask}
+                # Check if the underlying model uses token_type_ids
                 if hasattr(self.model, 'forward') and 'token_type_ids' in self.model.forward.__code__.co_varnames:
-                     model_kwargs['token_type_ids'] = current_token_type_ids
+                     if token_type_ids is not None:
+                        model_kwargs['token_type_ids'] = token_type_ids
+                     # else: print warning or ensure token_type_ids always passed if model expects it
 
 
                 if self.autocast_dtype:
@@ -184,10 +134,9 @@ class CustomModel(nn.Module):
                      raise ValueError("CustomModel's self.model did not return 'hidden_states'. Ensure it's a transformer model and output_hidden_states=True.")
                 
                 all_hidden_states = outputs.hidden_states
-                # CLS token embeddings from each transformer layer (excluding input embeddings)
                 cls_embeddings = [h_layer[:, 0, :] for h_layer in all_hidden_states[1:]]
                 return cls_embeddings
-            else: # Student on "teacher_distill" task type, should not happen with current trainer logic.
+            else: 
                  raise ValueError("Student model received 'teacher_distill' task_type.")
 
         # --- New FutureTOD-aligned Student Path for CustomModel ---
@@ -224,20 +173,21 @@ class CustomModel(nn.Module):
 
         # --- Existing Teacher Path (for old distillation logic if ever used) ---
         if self.is_teacher: # This implies old task type `distillation_teacher_forward`
-            if task_type != "distillation_teacher_forward": # Already handled by new teacher_distill
-                # This path is now less likely to be hit if trainer uses new task types
-                raise ValueError(f"Teacher model called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward' or 'teacher_distill'.")
-            if future_input_ids is None or future_attention_mask is None:
-                raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+            if task_type == "distillation_teacher_forward": # Check if this is the task
+                if future_input_ids is None or future_attention_mask is None: # Still needed for this old path
+                    raise ValueError("Teacher model in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
 
-            if self.autocast_dtype:
-                with autocast(device_type="cuda", dtype=self.autocast_dtype):
+                if self.autocast_dtype:
+                    with autocast(device_type="cuda", dtype=self.autocast_dtype):
+                        # This uses the OLD _get_combined_mean_embeddings with separate future inputs
+                        mean_embeddings_teacher = self._get_combined_mean_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                        projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+                else:
                     mean_embeddings_teacher = self._get_combined_mean_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
                     projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
-            else:
-                mean_embeddings_teacher = self._get_combined_mean_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
-                projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
-            return projected_teacher_emb
+                return projected_teacher_emb
+            # If task_type is not "distillation_teacher_forward" and is_teacher, it should have been handled by "teacher_distill"
+            # or it's an invalid state if it reaches here for a teacher.
 
         # --- Existing Student Paths ---
         if task_type == "contrastive_learning":
@@ -363,8 +313,7 @@ class PSCBert(BertPreTrainedModel):
         if paired_input_ids.shape[1] == 2:
             input_ids_1, input_ids_2 = torch.unbind(paired_input_ids, dim=1)
             attention_mask_1, attention_mask_2 = torch.unbind(paired_attention_mask, dim=1)
-            # Roberta doesn't use token_type_ids by default, but pass if MLM needs them
-            token_type_ids_1, token_type_ids_2 = (None, None)
+            token_type_ids_1, token_type_ids_2 = (None, None) # Initialize
             if token_type_ids is not None:
                 token_type_ids_1, token_type_ids_2 = torch.unbind(token_type_ids, dim=1)
 
@@ -374,20 +323,11 @@ class PSCBert(BertPreTrainedModel):
             attention_mask_1 = paired_attention_mask[:, :-1, :].reshape(batch_size, -1)
             input_ids_2 = paired_input_ids[:, -1, :]
             attention_mask_2 = paired_attention_mask[:, -1, :]
-            # Token type IDs for multi-turn might need specific handling not covered here.
-            token_type_ids_1, token_type_ids_2 = (None, None) 
-
-        # For contrastive, use pooler_output or CLS from last_hidden_state
-        # BertModel returns (last_hidden_state, pooler_output, ...)
-        # BertForMaskedLM does not have pooler_output directly in its main output tuple.
-        # We need to ensure we get embeddings appropriate for contrastive learning.
-        # Using CLS from last_hidden_state after passing through self.bert (which is BertForMaskedLM for student)
+            token_type_ids_1, token_type_ids_2 = (None, None)
         
         outputs1 = self.bert(input_ids_1, attention_mask=attention_mask_1, token_type_ids=token_type_ids_1, return_dict=True)
         outputs2 = self.bert(input_ids_2, attention_mask=attention_mask_2, token_type_ids=token_type_ids_2, return_dict=True)
 
-        # If self.bert is BertForMaskedLM, it has 'hidden_states'. If BertModel, it's 'last_hidden_state'.
-        # We need the final layer's hidden states for CLS token.
         last_hidden1 = outputs1.hidden_states[-1] if hasattr(outputs1, 'hidden_states') and outputs1.hidden_states is not None else outputs1.last_hidden_state
         last_hidden2 = outputs2.hidden_states[-1] if hasattr(outputs2, 'hidden_states') and outputs2.hidden_states is not None else outputs2.last_hidden_state
         
@@ -398,111 +338,36 @@ class PSCBert(BertPreTrainedModel):
         return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
 
     def _prepare_teacher_input(self, context_ids, context_mask, future_ids, future_mask):
-        # Simplified combination. Assumes context_ids and future_ids are full sequences from get_batch_token.
-        # This should be: [CLS] context_tokens [SEP] future_tokens [SEP]
-        # And corresponding token_type_ids: 0 for CLS and context, 1 for future and its SEP.
-
-        # Naive: Strip CLS from future, concat. This is error-prone.
-        # A proper implementation would use tokenizer.build_inputs_with_special_tokens_pair
-        # or similar logic, which is hard to do here without the tokenizer instance.
-        
-        # For simplicity, let's assume the trainer is responsible for providing tokenizer for this,
-        # or this model gets pre-combined inputs for teacher.
-        # Given the current trainer, it passes context and future separately.
-        
-        # Let's try a direct but simplified concatenation for now.
-        # Max length should be handled.
-        cls_token_id = self.config.cls_token_id if hasattr(self.config, 'cls_token_id') else 101 # Default for BERT
-        sep_token_id = self.config.sep_token_id if hasattr(self.config, 'sep_token_id') else 102
-        pad_token_id = self.config.pad_token_id if hasattr(self.config, 'pad_token_id') else 0
-        
-        batch_size = context_ids.shape[0]
-        max_seq_len = self.config.max_position_embeddings
-
-        combined_input_ids_list = []
-        combined_attention_mask_list = []
-        combined_token_type_ids_list = []
-
-        for i in range(batch_size):
-            ctx_ids = context_ids[i][context_mask[i] == 1].tolist() # Get unpadded tokens
-            fut_ids = future_ids[i][future_mask[i] == 1].tolist()
-
-            # Strip CLS/SEP from individual parts if they were added by get_batch_token
-            if ctx_ids[0] == cls_token_id: ctx_ids = ctx_ids[1:]
-            if ctx_ids[-1] == sep_token_id: ctx_ids = ctx_ids[:-1]
-            if fut_ids[0] == cls_token_id: fut_ids = fut_ids[1:]
-            if fut_ids[-1] == sep_token_id: fut_ids = fut_ids[:-1]
-
-            # Create combined sequence: [CLS] ctx [SEP] fut [SEP]
-            comb_ids = [cls_token_id] + ctx_ids + [sep_token_id] + fut_ids + [sep_token_id]
-            
-            seg1_len = 1 + len(ctx_ids) + 1 # CLS + ctx + SEP
-            seg2_len = len(fut_ids) + 1    # fut + SEP
-            
-            token_types = [0] * seg1_len + [1] * seg2_len
-            
-            # Truncate
-            if len(comb_ids) > max_seq_len:
-                # Prioritize context, then future. Simple truncation from the end of future first.
-                excess = len(comb_ids) - max_seq_len
-                if excess <= len(fut_ids): # Cut from future
-                    comb_ids = comb_ids[:max_seq_len-1] + [sep_token_id] # Ensure last token is SEP
-                    token_types = token_types[:max_seq_len]
-                else: # Future is gone, cut from context (more complex, for now just truncate combined)
-                    comb_ids = comb_ids[:max_seq_len-1] + [sep_token_id]
-                    token_types = token_types[:max_seq_len]
-            
-            current_len = len(comb_ids)
-            attn_mask = [1] * current_len
-            
-            # Pad
-            padding_len = max_seq_len - current_len
-            comb_ids += [pad_token_id] * padding_len
-            attn_mask += [0] * padding_len
-            token_types += [0] * padding_len # Pad token types with 0
-
-            combined_input_ids_list.append(comb_ids)
-            combined_attention_mask_list.append(attn_mask)
-            combined_token_type_ids_list.append(token_types)
-
-        final_input_ids = torch.tensor(combined_input_ids_list, dtype=torch.long).to(context_ids.device)
-        final_attention_mask = torch.tensor(combined_attention_mask_list, dtype=torch.long).to(context_ids.device)
-        final_token_type_ids = torch.tensor(combined_token_type_ids_list, dtype=torch.long).to(context_ids.device)
-        
-        return final_input_ids, final_attention_mask, final_token_type_ids
-
+        # This method is now REMOVED / NO LONGER USED.
+        # Preparation is done in PSCTrainer.prepare_distillation_input
+        pass
 
     def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None,
-                task_type="contrastive_learning", # Default or from trainer
-                future_input_ids=None, future_attention_mask=None):        
+                task_type="contrastive_learning", 
+                future_input_ids=None, # Kept for old task types, not for new "teacher_distill"
+                future_attention_mask=None # Kept for old task types
+                ):        
         
-        if task_type == "evaluate": # Kept for compatibility, uses mean embeddings
+        if task_type == "evaluate": 
             return self._get_raw_mean_embeddings(input_ids, attention_mask)
 
         # --- New FutureTOD Teacher Path ---
         if task_type == "teacher_distill":
             if not self.is_teacher:
                 raise ValueError("Student model received 'teacher_distill' task_type.")
-            if future_input_ids is None:
-                raise ValueError("Teacher model in 'teacher_distill' mode requires 'future_input_ids'.")
-
-            # Prepare combined input for the teacher
-            combined_ids, combined_mask, combined_token_types = self._prepare_teacher_input(
-                input_ids, attention_mask, future_input_ids, future_attention_mask
-            )
+            # Teacher now expects combined input_ids, attention_mask, and token_type_ids
+            # future_input_ids and future_attention_mask are NOT used here.
             
-            # Teacher uses BertModel, doesn't need/use labels for MLM
-            outputs = self.bert(
-                input_ids=combined_ids,
-                attention_mask=combined_mask,
-                token_type_ids=combined_token_types,
+            outputs = self.bert( # self.bert is BertModel for teacher
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids, # Use the combined token_type_ids
                 output_hidden_states=True,
                 return_dict=True
             )
-            all_hidden_states = outputs.hidden_states # tuple of (embeddings, layer1, ..., layerL)
-            if all_hidden_states is None: # Should not happen if output_hidden_states=True
+            all_hidden_states = outputs.hidden_states 
+            if all_hidden_states is None: 
                  raise ValueError("Teacher model did not return hidden_states.")
-            # CLS token embeddings from each transformer layer (excluding input embeddings layer 0)
             cls_embeddings = [h_layer[:, 0, :] for h_layer in all_hidden_states[1:]] 
             return cls_embeddings
 
@@ -531,13 +396,14 @@ class PSCBert(BertPreTrainedModel):
 
         # --- Teacher Path (OLD, for mean embedding distillation) ---
         elif self.is_teacher: # Implies task_type == "distillation_teacher_forward"
-            if task_type != "distillation_teacher_forward":
-                 raise ValueError(f"Teacher model (BertForMaskedLM) called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward' or 'teacher_distill'.")
-            # ... (rest of old teacher logic for mean embeddings, unchanged from original PSCBert for brevity)
-            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
-            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
-            return projected_teacher_emb
-
+            if task_type == "distillation_teacher_forward":
+                if future_input_ids is None or future_attention_mask is None:
+                    raise ValueError("Teacher model (BertForMaskedLM) in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+                mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+                return projected_teacher_emb
+            # If task_type is not "distillation_teacher_forward" and is_teacher, it should have been handled by "teacher_distill"
+            # or it's an invalid state if it reaches here for a teacher.
 
         # --- Student Path (Existing) ---
         elif task_type == "contrastive_learning":
@@ -623,7 +489,6 @@ class PSCRoberta(RobertaPreTrainedModel):
         if paired_input_ids.shape[1] == 2:
             input_ids_1, input_ids_2 = torch.unbind(paired_input_ids, dim=1)
             attention_mask_1, attention_mask_2 = torch.unbind(paired_attention_mask, dim=1)
-            # Roberta doesn't use token_type_ids by default, but pass if MLM needs them
             token_type_ids_1, token_type_ids_2 = (None, None)
         else: 
             batch_size = paired_input_ids.shape[0]
@@ -645,31 +510,24 @@ class PSCRoberta(RobertaPreTrainedModel):
         cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
         return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
 
-    # Re-using PSCBert's _prepare_teacher_input as it's generic for BERT-like models
-    # This is a reference; ideally, it should be a shared utility or part of a base class
-    _prepare_teacher_input = PSCBert._prepare_teacher_input 
-        
-    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None, # Added token_type_ids and labels
+    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None, 
                 task_type="contrastive_learning", 
-                future_input_ids=None, future_attention_mask=None):        
+                future_input_ids=None, # Kept for old task types
+                future_attention_mask=None # Kept for old task types
+                ):        
+        # Roberta generally ignores token_type_ids, but we accept it for consistent signature
         
         if task_type == "evaluate":
-            return self._get_raw_mean_embeddings(input_ids, attention_mask) # Uses mean
+            return self._get_raw_mean_embeddings(input_ids, attention_mask) 
 
         if task_type == "teacher_distill":
             if not self.is_teacher:
                 raise ValueError("Student model received 'teacher_distill' task_type.")
-            if future_input_ids is None:
-                raise ValueError("Teacher model in 'teacher_distill' mode requires 'future_input_ids'.")
-            
-            combined_ids, combined_mask, combined_token_types = self._prepare_teacher_input(
-                input_ids, attention_mask, future_input_ids, future_attention_mask
-            )
-            # Roberta doesn't typically use token_type_ids, but pass if underlying model handles them
+            # Teacher receives combined inputs
             outputs = self.roberta( # self.roberta is RobertaModel for teacher
-                input_ids=combined_ids,
-                attention_mask=combined_mask,
-                # token_type_ids=combined_token_types, # Roberta generally ignores token_type_ids
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                # token_type_ids=token_type_ids, # Roberta generally ignores this
                 output_hidden_states=True,
                 return_dict=True
             )
@@ -698,13 +556,12 @@ class PSCRoberta(RobertaPreTrainedModel):
         
         # --- Teacher Path (OLD, for mean embedding distillation) ---
         elif self.is_teacher: # Implies task_type == "distillation_teacher_forward"
-            if task_type != "distillation_teacher_forward":
-                 raise ValueError(f"Teacher model (Roberta) called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward' or 'teacher_distill'.")
-            # ... (rest of old teacher logic for mean embeddings, unchanged from original PSCBert for brevity)
-            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
-            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
-            return projected_teacher_emb
-
+            if task_type == "distillation_teacher_forward":
+                if future_input_ids is None or future_attention_mask is None:
+                    raise ValueError("Teacher model (Roberta) in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+                mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+                return projected_teacher_emb
 
         # --- Student Path (Existing) ---
         elif task_type == "contrastive_learning":
@@ -811,29 +668,23 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
         cnst_feat1, cnst_feat2 = self.contrast_logits(mean_output_1, mean_output_2)
         return cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
 
-    # Re-using PSCBert's _prepare_teacher_input
-    _prepare_teacher_input = PSCBert._prepare_teacher_input
-
-    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None, # Added token_type_ids and labels
+    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None, 
                 task_type="contrastive_learning", 
-                future_input_ids=None, future_attention_mask=None):        
-        # DistilBERT does not use token_type_ids, so they are ignored here.
+                future_input_ids=None, # Kept for old task types
+                future_attention_mask=None # Kept for old task types
+                ):        
+        # DistilBERT does not use token_type_ids, they will be ignored if passed.
         
         if task_type == "evaluate":
-            return self._get_raw_mean_embeddings(input_ids, attention_mask) # Uses mean
+            return self._get_raw_mean_embeddings(input_ids, attention_mask) 
 
         if task_type == "teacher_distill":
             if not self.is_teacher:
                 raise ValueError("Student model received 'teacher_distill' task_type.")
-            if future_input_ids is None:
-                raise ValueError("Teacher model in 'teacher_distill' mode requires 'future_input_ids'.")
-
-            combined_ids, combined_mask, _ = self._prepare_teacher_input( # DistilBERT ignores token_type_ids
-                input_ids, attention_mask, future_input_ids, future_attention_mask
-            )
+            # Teacher receives combined inputs
             outputs = self.distilbert( # self.distilbert is DistilBertModel for teacher
-                input_ids=combined_ids,
-                attention_mask=combined_mask,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
                 return_dict=True
             )
@@ -861,12 +712,12 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
 
         # --- Teacher Path (OLD, for mean embedding distillation) ---
         elif self.is_teacher: # Implies task_type == "distillation_teacher_forward"
-            if task_type != "distillation_teacher_forward":
-                 raise ValueError(f"Teacher model (DistilBERT) called with invalid task_type: {task_type}. Expected 'distillation_teacher_forward' or 'teacher_distill'.")
-            # ... (rest of old teacher logic for mean embeddings, unchanged from original PSCBert for brevity)
-            mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
-            projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
-            return projected_teacher_emb
+            if task_type == "distillation_teacher_forward":
+                if future_input_ids is None or future_attention_mask is None:
+                     raise ValueError(f"Teacher model (DistilBERT) in 'distillation_teacher_forward' mode requires future_input_ids and future_attention_mask.")
+                mean_embeddings_teacher = self._get_teacher_combined_embeddings(input_ids, attention_mask, future_input_ids, future_attention_mask)
+                projected_teacher_emb = self.distill_proj(mean_embeddings_teacher)
+                return projected_teacher_emb
 
         # --- Student Path (Existing) ---
         elif task_type == "contrastive_learning":
