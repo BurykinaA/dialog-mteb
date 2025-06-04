@@ -31,26 +31,26 @@ class PSCTrainer(nn.Module):
         self.dev_objective = -1
         self.device = torch.device("cuda")
         self.psc_loss = HardConLoss(temperature=self.args.temperature, contrast_type=self.args.contrast_type).cuda()
-        self.classify_loss = nn.CrossEntropyLoss().cuda()
-        self.distill_loss = nn.MSELoss().cuda()  # Distillation loss
+        self.classify_loss = nn.CrossEntropyLoss().cuda() # Can be used for MLM if model doesn't return loss
+        self.distill_loss_fn_mse_per_layer = nn.MSELoss().cuda()  # Per-layer MSE for Ldis
+        # self.distill_loss = nn.MSELoss().cuda() # Old single-layer distillation loss
 
-
-        # Буферы для EWMA (экспоненциально взвешенного скользящего среднего) лоссов
-        self.running_c_loss = torch.zeros(1, device='cuda')
-        self.running_d_loss = torch.zeros(1, device='cuda')
-        self.momentum = 0.9  # коэффициент для EWMA
-
-        # Небольшая эпсилон, чтобы не делить на ноль
-        self.eps = 1e-8
+        # For FutureTOD: Number of BERT layers to use for distillation
+        self.num_distill_layers = getattr(args, 'num_distill_layers', 9) # Default to 12 (BERT-base)
+        # For FutureTOD: MLM loss (typically CrossEntropyLoss, ignore_index=-100)
+        # Assuming model might return MLM loss directly if labels are passed.
+        # self.mlm_loss_fn = nn.CrossEntropyLoss(ignore_index=-100).cuda()
 
         
         # For FutureTOD algorithm
-        self.use_distillation = self.args.use_distillation
+        self.use_distillation = self.args.use_distillation # This flag is used for teacher updates
         self.update_teacher_interval = self.args.update_teacher_interval
         
         print(f"\nUsing PSC_Trainer in {self.args.mode} mode, {self.args.contrast_type}\n")
-        if self.use_distillation:
-            print(f"Using Teacher-Student Distillation with update interval: {self.update_teacher_interval}")
+        if self.use_distillation or self.args.mode in ['distill', 'combined']:
+            print(f"Distillation settings: num_distill_layers={self.num_distill_layers}, mlm_probability={getattr(args, 'mlm_probability', 0.15)}")
+            if self.teacher_model:
+                print(f"Using Teacher-Student Distillation with update interval: {self.update_teacher_interval}")
         
 
     def get_batch_token(self, text, max_length=-1):
@@ -98,19 +98,33 @@ class PSCTrainer(nn.Module):
         return input_ids.cuda(), attention_mask.cuda(), pairsimi.detach()
 
     def prepare_distillation_input(self, batch):
-        """Prepare inputs for distillation using the same fields as contrastive learning"""
-        # Use text1 as context and text2 as future
-        context, future = batch['text1'], batch['text2']
+        """
+        Prepare inputs for distillation.
+        Student receives MLM-processed context.
+        Teacher receives raw context + raw future.
+        """
+        # Raw text for teacher and other potential uses (batch is a list of strings)
+        teacher_context_text_batch = batch['text1'] 
+        future_text_batch = batch['text2']
         
-        context_feat = self.get_batch_token(context)
-        future_feat = self.get_batch_token(future)
+        # MLM related inputs are already batched tensors from DataLoader collation
+        student_mlm_input_ids = batch['context_mlm_input_ids'].to(self.device)
+        student_mlm_attention_mask = batch['context_mlm_attention_mask'].to(self.device)
+        mlm_labels = batch['context_mlm_labels'].to(self.device)
+
+        # Tokenize raw context text for the teacher model (unmasked)
+        teacher_context_feat = self.get_batch_token(teacher_context_text_batch, max_length=self.args.max_length)
+        teacher_context_ids = teacher_context_feat['input_ids'].to(self.device)
+        teacher_context_mask = teacher_context_feat['attention_mask'].to(self.device)
         
-        context_ids = context_feat['input_ids'].cuda()
-        context_mask = context_feat['attention_mask'].cuda()
-        future_ids = future_feat['input_ids'].cuda()
-        future_mask = future_feat['attention_mask'].cuda()
+        # Tokenize raw future text for the teacher model
+        future_feat = self.get_batch_token(future_text_batch, max_length=self.args.max_length) # Or a different max_length for future if needed
+        future_ids = future_feat['input_ids'].to(self.device)
+        future_mask = future_feat['attention_mask'].to(self.device)
         
-        return context_ids, context_mask, future_ids, future_mask
+        return student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
+               teacher_context_ids, teacher_context_mask, \
+               future_ids, future_mask
     
     def train_distillation_step(self, context_ids, context_mask, future_ids, future_mask):
         """Perform a distillation training step"""
@@ -133,7 +147,7 @@ class PSCTrainer(nn.Module):
             student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
             
             # Calculate distillation loss
-            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            dist_loss = self.distill_loss_fn_mse_per_layer(student_proj_emb, teacher_emb)
             
             # Calculate MLM loss if needed
             # mlm_loss = self.calculate_mlm_loss(context_ids, context_mask)
@@ -160,7 +174,7 @@ class PSCTrainer(nn.Module):
             student_proj_emb = self.model.module.get_distill_embeddings(student_emb)
             
             # Calculate distillation loss
-            dist_loss = self.distill_loss(student_proj_emb, teacher_emb)
+            dist_loss = self.distill_loss_fn_mse_per_layer(student_proj_emb, teacher_emb)
             
             # Calculate MLM loss if needed
             # mlm_loss = self.calculate_mlm_loss(context_ids, context_mask)
@@ -222,18 +236,30 @@ class PSCTrainer(nn.Module):
                         contrastive_input_ids, contrastive_attention_mask, pairsimi = self.prepare_pairwise_input(batch)
                     
                     # Подготовка данных для дистилляции
-                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
+                    student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
+                    teacher_context_ids, teacher_context_mask, \
+                    future_ids, future_mask = self.prepare_distillation_input(batch)
                     
                     # Обучение с комбинированными данными
                     losses = self.train_combined(
                         contrastive_input_ids, contrastive_attention_mask, pairsimi,
-                        context_ids, context_mask, future_ids, future_mask
+                        student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
+                        teacher_context_ids, teacher_context_mask,
+                        future_ids, future_mask
                     )
                     
                 elif self.args.mode == 'distill':
                     # Подготовка данных для дистилляции
-                    context_ids, context_mask, future_ids, future_mask = self.prepare_distillation_input(batch)
-                    losses = self.train_distillation(context_ids, context_mask, future_ids, future_mask)
+                    student_mlm_input_ids, student_mlm_attention_mask, mlm_labels, \
+                    teacher_context_ids, teacher_context_mask, \
+                    future_ids, future_mask = self.prepare_distillation_input(batch)
+                    
+                    # Обучение с дистилляцией (Ldis) и MLM (Lmlm) согласно FutureTOD
+                    losses = self.train_distillation(
+                        student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
+                        teacher_context_ids, teacher_context_mask,
+                        future_ids, future_mask
+                    )
                     
                 elif self.args.mode == 'contrastive':
                     # Подготовка данных для контрастивного обучения
@@ -254,65 +280,116 @@ class PSCTrainer(nn.Module):
             print("Finish Epoch: ", epoch)
             
             # Update teacher model if needed
-            if self.use_distillation and (epoch + 1) % self.update_teacher_interval == 0:
+            if self.teacher_model and self.use_distillation and (epoch + 1) % self.update_teacher_interval == 0:
                 self.update_teacher()
                 
+            # Save model every 10th epoch if self.args.save_model_every_epoch is True
             if self.args.save_model_every_epoch:
-                self.save_model(epoch, best_dev=False)
+                if (epoch + 1) % 10 == 0:
+                    self.save_model(epoch, best_dev=False)
+                # Optionally, save the last epoch if it's not a multiple of 10 and total epochs is small,
+                # or if you always want the final model. For now, strictly adhering to "every 10th epoch".
+                # Example: if you want to save the very last one too:
+                # elif (epoch + 1) == self.args.epochs:
+                #     self.save_model(epoch, best_dev=False)
 
         return None
 
     def train_combined(self, contrastive_input_ids, contrastive_attention_mask, pairsimi,
-                       context_ids, context_mask, future_ids, future_mask):
+                       student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
+                       teacher_context_ids, teacher_context_mask,
+                       future_ids, future_mask):
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
 
         def forward_backward():
-            # 1) контрастивная часть
-            cnst_feat1, cnst_feat2, student_proj_emb_for_distill = self.model(
+            # 1) Контрастивная часть (студент)
+            # Модель вернет: cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
+            # cnst_feat1, cnst_feat2, _, _ = self.model(... task_type="contrastive_learning")
+            # This part should use the "contrastive_learning" task type as defined in train_contrastive
+            # For simplicity, assuming the model.forward for "combined_learning_student_forward" can handle this,
+            # or it needs to be a separate call.
+            # Let's assume self.model can handle input_ids of shape (batch, 2, seq_len) for contrastive.
+            
+            # For contrastive loss, student processes paired inputs
+            # The current `task_type="combined_learning_student_forward"` in the original code for this model
+            # returned `cnst_feat1, cnst_feat2, student_proj_emb_for_distill`.
+            # We need to ensure the model's forward method is updated.
+            # For now, let's assume the first two outputs are for contrastive loss.
+            # And we will make a separate call for student's distillation-related outputs.
+
+            # Contrastive part
+            # Note: contrastive_input_ids might be shaped (batch_size, num_pairs=2, seq_len)
+            # The model's "contrastive_learning" task type expects this.
+            cnst_feat1_student, cnst_feat2_student, _, _ = self.model(
                 input_ids=contrastive_input_ids.to(self.device),
                 attention_mask=contrastive_attention_mask.to(self.device),
-                task_type="combined_learning_student_forward"
+                task_type="contrastive_learning" 
             )
-            contrastive_losses = self.psc_loss(cnst_feat1, cnst_feat2, pairsimi.to(self.device))
-            contrastive_loss = contrastive_losses["instdisc_loss"]  # уже на self.device
+            contrastive_losses_dict = self.psc_loss(cnst_feat1_student, cnst_feat2_student, pairsimi.to(self.device))
+            contrastive_loss = contrastive_losses_dict["instdisc_loss"]
 
-            # 2) дистилляционная часть: учитель
+            # 2) Дистилляционная часть (Ldis + Lmlm)
+            # 2.1) Студент (контекст C) -> MLM loss, многослойные CLS эмбеддинги
+            # Модель должна вернуть (mlm_loss, student_cls_hidden_states_list)
+            # student_cls_hidden_states_list: список тензоров CLS эмбеддингов для каждого из self.num_distill_layers
+            student_mlm_loss, student_cls_layers = self.model(
+                input_ids=student_mlm_input_ids.to(self.device), # Use student_mlm_input_ids
+                attention_mask=student_mlm_attention_mask.to(self.device), # Use student_mlm_attention_mask
+                labels=mlm_labels.to(self.device) if mlm_labels is not None else None,
+                task_type="student_distill_mlm" 
+            )
+            if mlm_labels is None and student_mlm_loss is None: 
+                student_mlm_loss = torch.tensor(0.0, device=self.device)
+            elif student_mlm_loss is None: # If model doesn't return MLM loss but labels were provided
+                 # This case should ideally be handled by the model returning a loss or logits for manual calculation.
+                 # For now, if student_mlm_loss is None but labels were present, we'll assume 0.
+                 # A more robust solution would involve calculating MLM loss here if model returns logits.
+                student_mlm_loss = torch.tensor(0.0, device=self.device)
+
+
+            # 2.2) Учитель (контекст C + будущее F) -> многослойные CLS эмбеддинги
+            # Модель должна вернуть (teacher_cls_hidden_states_list)
             with torch.no_grad():
-                teacher_emb_target = self.teacher_model(
-                    input_ids=context_ids.to(self.device),
-                    attention_mask=context_mask.to(self.device),
-                    task_type="distillation_teacher_forward",
+                teacher_cls_layers = self.teacher_model(
+                    input_ids=teacher_context_ids.to(self.device), # Use teacher_context_ids
+                    attention_mask=teacher_context_mask.to(self.device), # Use teacher_context_mask
+                    task_type="teacher_distill", 
                     future_input_ids=future_ids.to(self.device),
                     future_attention_mask=future_mask.to(self.device)
                 )
-            dist_loss = self.distill_loss(student_proj_emb_for_distill, teacher_emb_target)
 
-            # Обновляем EWMA (без градиента). Все тензоры на self.device.
-            with torch.no_grad():
-                self.running_c_loss.mul_(self.momentum).add_(
-                    contrastive_loss.detach() * (1 - self.momentum)
-                )
-                self.running_d_loss.mul_(self.momentum).add_(
-                    dist_loss.detach() * (1 - self.momentum)
-                )
+            # Расчет Ldis (сумма MSE по слоям)
+            ldis_sum_layers = torch.tensor(0.0, device=self.device)
+            if len(student_cls_layers) != len(teacher_cls_layers):
+                # This should not happen if models are configured correctly for self.num_distill_layers
+                print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
+            
+            num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
 
-            # Считаем коэффициент (тоже тензор на self.device)
-            coeff = (self.running_c_loss + self.eps) / (self.running_d_loss + self.eps)
+            for i in range(num_layers_to_distill):
+                s_layer_cls = student_cls_layers[i] # Assuming these are [batch_size, hidden_dim]
+                t_layer_cls = teacher_cls_layers[i]
+                ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls)
+            
+            # Общий лосс FutureTOD компонента = Ldis + Lmlm
+            futuretod_loss = ldis_sum_layers + student_mlm_loss
 
             # Комбинированный лосс
-            total_loss = contrastive_loss + self.args.distill_weight * coeff * dist_loss
-            return total_loss, contrastive_loss, dist_loss, coeff
+            # L_total = L_contrastive + weight_distill * (Ldis + Lmlm)
+            total_loss = contrastive_loss + self.args.distill_weight * futuretod_loss
+            
+            return total_loss, contrastive_loss, ldis_sum_layers, student_mlm_loss
 
         # Собственно шаг оптимизации
         if not use_mixed_precision:
-            total_loss, contrastive_loss, dist_loss, coeff = forward_backward()
+            total_loss, cl, dl, ml = forward_backward()
             total_loss.backward()
             self.optimizer.step()
         else:
             from torch.cuda.amp import autocast
             with autocast(device_type="cuda", dtype=dtype):
-                total_loss, contrastive_loss, dist_loss, coeff = forward_backward()
+                total_loss, cl, dl, ml = forward_backward()
             if self.args.mixed_precision == "fp16":
                 self.scaler.scale(total_loss).backward()
                 self.scaler.step(self.optimizer)
@@ -324,9 +401,10 @@ class PSCTrainer(nn.Module):
         self.optimizer.zero_grad()
 
         return {
-            "instdisc_loss": contrastive_loss.item(),
-            "distill_loss": dist_loss.item(),
-            "coeff": coeff.item(),
+            "instdisc_loss": cl.item(),
+            "Ldis_sum_layers": dl.item(),
+            "mlm_loss": ml.item() if isinstance(ml, torch.Tensor) else ml, 
+            "futuretod_loss": (dl + (ml if isinstance(ml, torch.Tensor) else torch.tensor(ml, device=dl.device))).item(),
             "total_loss": total_loss.item()
         }
 
@@ -366,48 +444,74 @@ class PSCTrainer(nn.Module):
         self.optimizer.zero_grad()
         return losses
 
-    def train_distillation(self, context_ids, context_mask, future_ids, future_mask):
-        """Обучение только с дистилляционной потерей"""
+    def train_distillation(self, student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
+                           teacher_context_ids, teacher_context_mask,
+                           future_ids, future_mask):
+        """Обучение с дистилляцией (Ldis) и MLM (Lmlm) согласно FutureTOD"""
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
         
-        # Функция для выполнения прямого прохода
+        self.model.train()
+        if self.teacher_model:
+            self.teacher_model.eval()
+
         def forward():
-            # Учительская модель: получает контекст + будущее
+            # Студент (контекст C, обработанный для MLM) -> MLM loss, многослойные CLS эмбеддинги
+            student_mlm_loss, student_cls_layers = self.model(
+                input_ids=student_mlm_input_ids.to(self.device), 
+                attention_mask=student_mlm_attention_mask.to(self.device),
+                labels=mlm_labels.to(self.device) if mlm_labels is not None else None,
+                task_type="student_distill_mlm" 
+            )
+            if mlm_labels is None and student_mlm_loss is None: 
+                student_mlm_loss = torch.tensor(0.0, device=self.device)
+
+            # Учитель (контекст C + будущее F, необработанные) -> многослойные CLS эмбеддинги
             with torch.no_grad():
-                teacher_emb_target = self.teacher_model(
-                    input_ids=context_ids, 
-                    attention_mask=context_mask,
-                    task_type="distillation_teacher_forward", # Updated task_type
-                    future_input_ids=future_ids, 
-                    future_attention_mask=future_mask
+                teacher_cls_layers = self.teacher_model(
+                    input_ids=teacher_context_ids.to(self.device), 
+                    attention_mask=teacher_context_mask.to(self.device),
+                    task_type="teacher_distill", 
+                    future_input_ids=future_ids.to(self.device), 
+                    future_attention_mask=future_mask.to(self.device)
                 )
             
-            # Студенческая модель: получает только контекст, возвращает спроецированные эмбеддинги
-            student_proj_emb = self.model(
-                input_ids=context_ids, 
-                attention_mask=context_mask, 
-                task_type="distillation_student_forward" # Updated task_type
-            )
-            dist_loss = self.distill_loss(student_proj_emb, teacher_emb_target)
-            return dist_loss
+            # Расчет Ldis (сумма MSE по слоям)
+            ldis_sum_layers = torch.tensor(0.0, device=self.device)
+            if len(student_cls_layers) != len(teacher_cls_layers):
+                 print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
+
+            num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
+
+            for i in range(num_layers_to_distill):
+                s_layer_cls = student_cls_layers[i]
+                t_layer_cls = teacher_cls_layers[i]
+                ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls)
+            
+            # Общий лосс = Ldis + Lmlm
+            total_loss = ldis_sum_layers + student_mlm_loss
+            return total_loss, ldis_sum_layers, student_mlm_loss
         
         # Обработка с учетом precision
         if not use_mixed_precision:
-            dist_loss = forward()
-            dist_loss.backward()
+            total_loss, ldis, mlm = forward()
+            total_loss.backward()
             self.optimizer.step()
         else:
             with autocast(device_type="cuda", dtype=dtype):
-                dist_loss = forward()
+                total_loss, ldis, mlm = forward()
                 
             if self.args.mixed_precision == "fp16":
-                self.scaler.scale(dist_loss).backward()
+                self.scaler.scale(total_loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:  # bf16
-                dist_loss.backward()
+                total_loss.backward()
                 self.optimizer.step()
         
         self.optimizer.zero_grad()
-        return {"distill_loss": dist_loss.item()}
+        return {
+            "total_loss": total_loss.item(),
+            "Ldis_sum_layers": ldis.item(),
+            "mlm_loss": mlm.item() if isinstance(mlm, torch.Tensor) else mlm
+        }
