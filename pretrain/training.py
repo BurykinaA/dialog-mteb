@@ -52,6 +52,8 @@ class PSCTrainer(nn.Module):
             if self.teacher_model:
                 print(f"Using Teacher-Student Distillation with update interval: {self.update_teacher_interval}")
         
+        # Distillation projection layer
+        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
 
     def get_batch_token(self, text, max_length=-1):
         if max_length == -1:
@@ -303,24 +305,10 @@ class PSCTrainer(nn.Module):
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
 
+        self.optimizer.zero_grad() # Moved zero_grad to the beginning of the step
+
         def forward_backward():
             # 1) Контрастивная часть (студент)
-            # Модель вернет: cnst_feat1, cnst_feat2, mean_output_1, mean_output_2
-            # cnst_feat1, cnst_feat2, _, _ = self.model(... task_type="contrastive_learning")
-            # For simplicity, assuming the model.forward for "combined_learning_student_forward" can handle this,
-            # or it needs to be a separate call.
-            # Let's assume self.model can handle input_ids of shape (batch, 2, seq_len) for contrastive.
-            
-            # For contrastive loss, student processes paired inputs
-            # The current `task_type="combined_learning_student_forward"` in the original code for this model
-            # returned `cnst_feat1, cnst_feat2, student_proj_emb_for_distill`.
-            # We need to ensure the model's forward method is updated.
-            # For now, let's assume the first two outputs are for contrastive loss.
-            # And we will make a separate call for student's distillation-related outputs.
-
-            # Contrastive part
-            # Note: contrastive_input_ids might be shaped (batch_size, num_pairs=2, seq_len)
-            # The model's "contrastive_learning" task type expects this.
             cnst_feat1_student, cnst_feat2_student, _, _ = self.model(
                 input_ids=contrastive_input_ids.to(self.device),
                 attention_mask=contrastive_attention_mask.to(self.device),
@@ -330,82 +318,96 @@ class PSCTrainer(nn.Module):
             contrastive_loss = contrastive_losses_dict["instdisc_loss"]
 
             # 2) Дистилляционная часть (Ldis + Lmlm)
-            # 2.1) Студент (контекст C) -> MLM loss, многослойные CLS эмбеддинги
-            # Модель должна вернуть (mlm_loss, student_cls_hidden_states_list)
-            # student_cls_hidden_states_list: список тензоров CLS эмбеддингов для каждого из self.num_distill_layers
             student_mlm_loss, student_cls_layers = self.model(
-                input_ids=student_mlm_input_ids.to(self.device), # Use student_mlm_input_ids
-                attention_mask=student_mlm_attention_mask.to(self.device), # Use student_mlm_attention_mask
+                input_ids=student_mlm_input_ids.to(self.device), 
+                attention_mask=student_mlm_attention_mask.to(self.device),
                 labels=mlm_labels.to(self.device) if mlm_labels is not None else None,
                 task_type="student_distill_mlm" 
             )
-            if mlm_labels is None and student_mlm_loss is None: 
-                student_mlm_loss = torch.tensor(0.0, device=self.device)
-            elif student_mlm_loss is None: # If model doesn't return MLM loss but labels were provided
-                 # This case should ideally be handled by the model returning a loss or logits for manual calculation.
-                 # For now, if student_mlm_loss is None but labels were present, we'll assume 0.
-                 # A more robust solution would involve calculating MLM loss here if model returns logits.
-                student_mlm_loss = torch.tensor(0.0, device=self.device)
+            
+            # --- Debugging MLM Loss ---
+            print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
+            if student_mlm_loss is None:
+                student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=False) # Ensure it's a tensor and not None
+                print(f"DEBUG: student_mlm_loss was None, set to 0.0")
+            elif not isinstance(student_mlm_loss, torch.Tensor):
+                 student_mlm_loss = torch.tensor(float(student_mlm_loss), device=self.device, requires_grad=False) # Convert if it's a float/int
+                 print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
+            
+            if torch.isnan(student_mlm_loss).any():
+                print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
+                # Potentially add more debug info here, like input shapes or label values
+                # For now, we might want to prevent NaN from propagating if it's an isolated issue
+                # student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True) # Or handle differently
 
-
-            # 2.2) Учитель (контекст C + будущее F) -> многослойные CLS эмбеддинги
-            # Модель должна вернуть (teacher_cls_hidden_states_list)
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
                     input_ids=teacher_combined_input_ids.to(self.device), 
                     attention_mask=teacher_combined_attention_mask.to(self.device),
-                    token_type_ids=teacher_combined_token_type_ids.to(self.device), # Pass token_type_ids
+                    token_type_ids=teacher_combined_token_type_ids.to(self.device) if teacher_combined_token_type_ids is not None else None,
                     task_type="teacher_distill"
-                    # future_input_ids and future_attention_mask are no longer needed here
                 )
 
-            # Расчет Ldis (сумма MSE по слоям)
             ldis_sum_layers = torch.tensor(0.0, device=self.device)
-            if len(student_cls_layers) != len(teacher_cls_layers):
-                # This should not happen if models are configured correctly for self.num_distill_layers
-                print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
-            
-            num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
+            num_layers_to_distill = 0
+            if student_cls_layers is not None and teacher_cls_layers is not None:
+                if len(student_cls_layers) != len(teacher_cls_layers) and self.num_distill_layers > 0 :
+                    print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
+                
+                num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
 
-            for i in range(num_layers_to_distill):
-                s_layer_cls = student_cls_layers[i] # Assuming these are [batch_size, hidden_dim]
-                t_layer_cls = teacher_cls_layers[i]
-                ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls)
+                for i in range(num_layers_to_distill):
+                    s_layer_cls = student_cls_layers[-(i + 1)] # Taking top layers
+                    t_layer_cls = teacher_cls_layers[-(i + 1)] # Taking top layers
+                    ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls.detach())
             
-            # Общий лосс FutureTOD компонента = Ldis + Lmlm
             futuretod_loss = ldis_sum_layers + student_mlm_loss
-
-            # Комбинированный лосс
-            # L_total = L_contrastive + weight_distill * (Ldis + Lmlm)
             total_loss = contrastive_loss + self.args.distill_weight * futuretod_loss
             
+            # --- Debugging All Losses ---
+            print(f"DEBUG Combined - Contrastive: {contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else contrastive_loss}, "
+                  f"Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
+                  f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
+                  f"FutureTOD: {futuretod_loss.item() if isinstance(futuretod_loss, torch.Tensor) else futuretod_loss}, "
+                  f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
+            
+            if torch.isnan(total_loss).any():
+                print(f"DEBUG: NaN detected in total_loss (Combined Mode)!")
+                # Trigger breakpoint or detailed dump if NaN
+                # import pdb; pdb.set_trace() 
+
             return total_loss, contrastive_loss, ldis_sum_layers, student_mlm_loss
 
-        # Собственно шаг оптимизации
         if not use_mixed_precision:
             total_loss, cl, dl, ml = forward_backward()
-            total_loss.backward()
-            self.optimizer.step()
-        else:
-            from torch.cuda.amp import autocast
-            with autocast(device_type="cuda", dtype=dtype):
-                total_loss, cl, dl, ml = forward_backward()
-            if self.args.mixed_precision == "fp16":
-                self.scaler.scale(total_loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:  # bf16
+            if not torch.isnan(total_loss).any(): # Only backward if not NaN
                 total_loss.backward()
                 self.optimizer.step()
-
-        self.optimizer.zero_grad()
+            else:
+                print("Skipping backward/step due to NaN in total_loss (Combined Mode, no AMP)")
+        else:
+            with autocast(device_type="cuda", dtype=dtype):
+                total_loss, cl, dl, ml = forward_backward()
+            
+            if not torch.isnan(total_loss).any(): # Only backward if not NaN
+                if self.args.mixed_precision == "fp16" and self.scaler is not None:
+                    self.scaler.scale(total_loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:  # bf16 or (fp16 and self.scaler is None, though unlikely)
+                    total_loss.backward()
+                    self.optimizer.step()
+            else:
+                print("Skipping backward/step due to NaN in total_loss (Combined Mode, AMP)")
+        
+        # self.optimizer.zero_grad() # Already at the beginning
 
         return {
-            "instdisc_loss": cl.item(),
-            "Ldis_sum_layers": dl.item(),
-            "mlm_loss": ml.item() if isinstance(ml, torch.Tensor) else ml, 
-            "futuretod_loss": (dl + (ml if isinstance(ml, torch.Tensor) else torch.tensor(ml, device=dl.device))).item(),
-            "total_loss": total_loss.item()
+            "instdisc_loss": cl.item() if isinstance(cl, torch.Tensor) and not torch.isnan(cl).any() else float('nan'),
+            "Ldis_sum_layers": dl.item() if isinstance(dl, torch.Tensor) and not torch.isnan(dl).any() else float('nan'),
+            "mlm_loss": ml.item() if isinstance(ml, torch.Tensor) and not torch.isnan(ml).any() else float('nan'),
+            "futuretod_loss": (dl + ml).item() if isinstance(dl, torch.Tensor) and isinstance(ml, torch.Tensor) and not torch.isnan(dl+ml).any() else float('nan'),
+            "total_loss": total_loss.item() if isinstance(total_loss, torch.Tensor) and not torch.isnan(total_loss).any() else float('nan')
         }
 
     def train_contrastive(self, input_ids, attention_mask, pairsimi):
@@ -446,71 +448,95 @@ class PSCTrainer(nn.Module):
 
     def train_distillation(self, student_mlm_input_ids, student_mlm_attention_mask, mlm_labels,
                            teacher_combined_input_ids, teacher_combined_attention_mask, teacher_combined_token_type_ids):
-        """Обучение с дистилляцией (Ldis) и MLM (Lmlm) согласно FutureTOD"""
         use_mixed_precision = self.args.mixed_precision in ["fp16", "bf16"]
         dtype = torch.float16 if self.args.mixed_precision == "fp16" else torch.bfloat16
         
         self.model.train()
         if self.teacher_model:
             self.teacher_model.eval()
+        
+        self.optimizer.zero_grad() # Moved zero_grad to the beginning
 
         def forward():
-            # Студент (контекст C, обработанный для MLM) -> MLM loss, многослойные CLS эмбеддинги
             student_mlm_loss, student_cls_layers = self.model(
                 input_ids=student_mlm_input_ids.to(self.device), 
                 attention_mask=student_mlm_attention_mask.to(self.device),
                 labels=mlm_labels.to(self.device) if mlm_labels is not None else None,
                 task_type="student_distill_mlm" 
             )
-            if mlm_labels is None and student_mlm_loss is None: 
-                student_mlm_loss = torch.tensor(0.0, device=self.device)
 
-            # Учитель (контекст C + будущее F, УЖЕ КОМБИНИРОВАННЫЕ) -> многослойные CLS эмбеддинги
+            # --- Debugging MLM Loss ---
+            print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
+            if student_mlm_loss is None:
+                student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=False)
+                print(f"DEBUG: student_mlm_loss was None, set to 0.0")
+            elif not isinstance(student_mlm_loss, torch.Tensor):
+                 student_mlm_loss = torch.tensor(float(student_mlm_loss), device=self.device, requires_grad=False)
+                 print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
+
+            if torch.isnan(student_mlm_loss).any():
+                print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
+                # student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
                     input_ids=teacher_combined_input_ids.to(self.device), 
                     attention_mask=teacher_combined_attention_mask.to(self.device),
-                    token_type_ids=teacher_combined_token_type_ids.to(self.device), # Pass token_type_ids
+                    token_type_ids=teacher_combined_token_type_ids.to(self.device) if teacher_combined_token_type_ids is not None else None,
                     task_type="teacher_distill"
-                    # future_input_ids and future_attention_mask are no longer needed here
                 )
             
-            # Расчет Ldis (сумма MSE по слоям)
             ldis_sum_layers = torch.tensor(0.0, device=self.device)
-            if len(student_cls_layers) != len(teacher_cls_layers):
-                 print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
-
-            num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
-
-            for i in range(num_layers_to_distill):
-                s_layer_cls = student_cls_layers[i]
-                t_layer_cls = teacher_cls_layers[i]
-                ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls)
+            num_layers_to_distill = 0
+            if student_cls_layers is not None and teacher_cls_layers is not None:
+                if len(student_cls_layers) != len(teacher_cls_layers) and self.num_distill_layers > 0:
+                    print(f"Warning: Mismatch in number of layers for distillation. Student: {len(student_cls_layers)}, Teacher: {len(teacher_cls_layers)}")
+                
+                num_layers_to_distill = min(len(student_cls_layers), len(teacher_cls_layers), self.num_distill_layers)
+                for i in range(num_layers_to_distill):
+                    s_layer_cls = student_cls_layers[-(i + 1)] # Taking top layers
+                    t_layer_cls = teacher_cls_layers[-(i + 1)] # Taking top layers
+                    ldis_sum_layers += self.distill_loss_fn_mse_per_layer(s_layer_cls, t_layer_cls.detach())
             
-            # Общий лосс = Ldis + Lmlm
             total_loss = ldis_sum_layers + student_mlm_loss
+
+            # --- Debugging All Losses ---
+            print(f"DEBUG Distill - Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
+                  f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
+                  f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
+            
+            if torch.isnan(total_loss).any():
+                print(f"DEBUG: NaN detected in total_loss (Distill Mode)!")
+                # import pdb; pdb.set_trace()
+
             return total_loss, ldis_sum_layers, student_mlm_loss
         
-        # Обработка с учетом precision
         if not use_mixed_precision:
             total_loss, ldis, mlm = forward()
-            total_loss.backward()
-            self.optimizer.step()
+            if not torch.isnan(total_loss).any():
+                total_loss.backward()
+                self.optimizer.step()
+            else:
+                print("Skipping backward/step due to NaN in total_loss (Distill Mode, no AMP)")
         else:
             with autocast(device_type="cuda", dtype=dtype):
                 total_loss, ldis, mlm = forward()
-                
-            if self.args.mixed_precision == "fp16":
-                self.scaler.scale(total_loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:  # bf16
-                total_loss.backward()
-                self.optimizer.step()
+            
+            if not torch.isnan(total_loss).any():
+                if self.args.mixed_precision == "fp16" and self.scaler is not None:
+                    self.scaler.scale(total_loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:  # bf16
+                    total_loss.backward()
+                    self.optimizer.step()
+            else:
+                print("Skipping backward/step due to NaN in total_loss (Distill Mode, AMP)")
         
-        self.optimizer.zero_grad()
+        # self.optimizer.zero_grad() # Already at the beginning
+
         return {
-            "total_loss": total_loss.item(),
-            "Ldis_sum_layers": ldis.item(),
-            "mlm_loss": mlm.item() if isinstance(mlm, torch.Tensor) else mlm
+            "total_loss": total_loss.item() if isinstance(total_loss, torch.Tensor) and not torch.isnan(total_loss).any() else float('nan'),
+            "Ldis_sum_layers": ldis.item() if isinstance(ldis, torch.Tensor) and not torch.isnan(ldis).any() else float('nan'),
+            "mlm_loss": mlm.item() if isinstance(mlm, torch.Tensor) and not torch.isnan(mlm).any() else float('nan')
         }
