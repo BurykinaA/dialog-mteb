@@ -52,8 +52,7 @@ class PSCTrainer(nn.Module):
             if self.teacher_model:
                 print(f"Using Teacher-Student Distillation with update interval: {self.update_teacher_interval}")
         
-        # Distillation projection layer
-        self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False)
+        # self.distill_proj = nn.Linear(self.emb_size, self.emb_size, bias=False) # REMOVED THIS LINE
 
     def get_batch_token(self, text, max_length=-1):
         if max_length == -1:
