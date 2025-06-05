@@ -215,13 +215,13 @@ class PSCTrainer(nn.Module):
             save_dir = os.path.join(self.args.resPath, 'dev')
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
-            self.model.module.save_pretrained(save_dir)
+            self.model.module.save_pretrained(save_dir, safe_serialization=False)
             self.tokenizer.save_pretrained(save_dir)
         else:
             save_dir = os.path.join(self.args.resPath, str(epoch+1))
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
-            self.model.module.save_pretrained(save_dir)
+            self.model.module.save_pretrained(save_dir, safe_serialization=False)
             self.tokenizer.save_pretrained(save_dir)
 
     def train(self):
