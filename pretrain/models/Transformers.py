@@ -256,8 +256,41 @@ class CustomModel(nn.Module):
         
     def copy_parameters_from(self, source_model):
         """Copy parameters from source model to this model"""
-        self.load_state_dict(source_model.state_dict())
-        print("Model parameters copied successfully")
+        # Assuming source_model is a CustomModel (student) and self is CustomModel (teacher)
+        # Student might have AutoModelForMaskedLM, teacher has AutoModel
+        # We need to copy the base model weights.
+        
+        source_base_model = None
+        if hasattr(source_model.model, 'base_model'): # Common for *ForMaskedLM models
+            source_base_model = source_model.model.base_model
+        elif hasattr(source_model.model, 'bert'): # e.g. BertForMaskedLM
+            source_base_model = source_model.model.bert
+        elif hasattr(source_model.model, 'roberta'): # e.g. RobertaForMaskedLM
+            source_base_model = source_model.model.roberta
+        elif hasattr(source_model.model, 'distilbert'): # e.g. DistilBertForMaskedLM
+            source_base_model = source_model.model.distilbert
+        elif hasattr(source_model.model, 'transformer') and hasattr(source_model.model.transformer, 'base_model'): # Specific to some architectures from AutoModel
+             source_base_model = source_model.model.transformer.base_model
+        else:
+            # Fallback: assume source_model.model is already the base model or compatible
+            # This might happen if student was loaded as AutoModel initially
+            source_base_model = source_model.model 
+            print("Warning: CustomModel copy_parameters_from using fallback for source_base_model.")
+
+        target_base_model = self.model # Teacher's self.model is usually the base AutoModel
+
+        if source_base_model is not None:
+            target_base_model.load_state_dict(source_base_model.state_dict())
+            print("CustomModel parameters (base model) copied successfully from student to teacher.")
+        else:
+            print("Error: Could not identify base model in source_model for CustomModel parameter copy.")
+            # As a last resort, try direct copy if structures might be identical (e.g. both AutoModel)
+            try:
+                self.model.load_state_dict(source_model.model.state_dict())
+                print("CustomModel parameters copied using direct model state_dict (structures assumed identical).")
+            except RuntimeError as e:
+                print(f"Failed direct CustomModel state_dict copy as well: {e}")
+                print("Parameter copy failed for CustomModel.")
 
 
 
@@ -438,9 +471,24 @@ class PSCBert(BertPreTrainedModel):
         return self.distill_proj(embeddings)
         
     def copy_parameters_from(self, source_model):
-        """Copy parameters from source model to this model"""
-        self.load_state_dict(source_model.state_dict())
-        print("Model parameters copied successfully")
+        """Copy parameters from source_model.bert (student's BertForMaskedLM.bert) to self.bert (teacher's BertModel)"""
+        # source_model is the student PSCBert, which has source_model.bert (BertForMaskedLM)
+        # self is the teacher PSCBert, which has self.bert (BertModel)
+        # We need to copy from source_model.bert.bert to self.bert
+        if hasattr(source_model, 'bert') and hasattr(self.bert, 'load_state_dict'):
+            if hasattr(source_model.bert, 'bert'): # Student's BertForMaskedLM has a .bert attribute
+                self.bert.load_state_dict(source_model.bert.bert.state_dict())
+                print("PSCBert parameters (BertModel) copied successfully from student to teacher.")
+            else:
+                # This case might occur if source_model.bert was already just BertModel (e.g. if student was also loaded as BertModel)
+                # Though current setup is Student=BertForMaskedLM, Teacher=BertModel
+                try:
+                    self.bert.load_state_dict(source_model.bert.state_dict())
+                    print("PSCBert parameters copied (assuming compatible BertModel structures).")
+                except RuntimeError as e:
+                    print(f"PSCBert copy_parameters_from failed: {e}. Check model architectures.")
+        else:
+            print("Error: Could not copy parameters for PSCBert. Source or target .bert attribute missing or invalid.")
 
 
 
@@ -596,9 +644,19 @@ class PSCRoberta(RobertaPreTrainedModel):
         return self.distill_proj(embeddings)
         
     def copy_parameters_from(self, source_model):
-        """Copy parameters from source model to this model"""
-        self.load_state_dict(source_model.state_dict())
-        print("Model parameters copied successfully")
+        """Copy parameters from source_model.roberta (student's RobertaForMaskedLM.roberta) to self.roberta (teacher's RobertaModel)"""
+        if hasattr(source_model, 'roberta') and hasattr(self.roberta, 'load_state_dict'):
+            if hasattr(source_model.roberta, 'roberta'): # Student's RobertaForMaskedLM has a .roberta attribute for the base
+                self.roberta.load_state_dict(source_model.roberta.roberta.state_dict())
+                print("PSCRoberta parameters (RobertaModel) copied successfully from student to teacher.")
+            else:
+                try:
+                    self.roberta.load_state_dict(source_model.roberta.state_dict())
+                    print("PSCRoberta parameters copied (assuming compatible RobertaModel structures).")
+                except RuntimeError as e:
+                    print(f"PSCRoberta copy_parameters_from failed: {e}. Check model architectures.")
+        else:
+            print("Error: Could not copy parameters for PSCRoberta. Source or target .roberta attribute missing or invalid.")
 
 
 
@@ -752,6 +810,43 @@ class PSCDistilBERT(DistilBertPreTrainedModel):
         return self.distill_proj(embeddings)
         
     def copy_parameters_from(self, source_model):
-        """Copy parameters from source model to this model"""
-        self.load_state_dict(source_model.state_dict())
-        print("Model parameters copied successfully")
+        """Copy parameters from source_model.distilbert (student's DistilBertForMaskedLM.distilbert) to self.distilbert (teacher's DistilBertModel)"""
+        if hasattr(source_model, 'distilbert') and hasattr(self.distilbert, 'load_state_dict'):
+            # DistilBertForMaskedLM directly contains DistilBertModel as `self.distilbert`, no further nesting like .distilbert.distilbert
+            # However, to be safe and consistent, we check if the source_model.distilbert has a 'distilbert' attribute itself
+            # typically, DistilBertForMaskedLM.distilbert IS the DistilBertModel.
+            
+            # The base DistilBertModel within DistilBertForMaskedLM is often accessed via an attribute like `transformer` or directly.
+            # Let's check the structure. Usually, DistilBertForMaskedLM.distilbert IS the DistilBertModel.
+            # The state_dict keys for DistilBertForMaskedLM will be like "distilbert.transformer..." and "vocab_projector..."
+            # The state_dict keys for DistilBertModel will be like "transformer..."
+            # So we need to copy from source_model.distilbert.transformer to self.distilbert.transformer
+
+            source_base = source_model.distilbert # This is DistilBertForMaskedLM instance
+            target_base = self.distilbert       # This is DistilBertModel instance
+
+            if hasattr(source_base, 'transformer') and hasattr(target_base, 'transformer'):
+                target_base.transformer.load_state_dict(source_base.transformer.state_dict())
+                print("PSCDistilBERT parameters (transformer) copied successfully from student to teacher.")
+            elif hasattr(source_base, 'distilbert') and hasattr(target_base, 'load_state_dict'): 
+                # This would be if source_base was DistilBertForMaskedLM and target_base was also DistilBertForMaskedLM
+                # Or if source_base.distilbert points to the base model.
+                # This path is less likely given the current setup but added for robustness.
+                try:
+                    target_base.load_state_dict(source_base.distilbert.state_dict())
+                    print("PSCDistilBERT parameters (distilbert attribute) copied.")
+                except Exception as e_inner:
+                    print(f"PSCDistilBERT copy from source.distilbert.distilbert failed: {e_inner}")
+                    try: # Fallback to direct copy if structures are simpler than expected
+                        target_base.load_state_dict(source_base.state_dict())
+                        print("PSCDistilBERT parameters copied via source_base.state_dict().")
+                    except RuntimeError as e:
+                        print(f"PSCDistilBERT copy_parameters_from failed: {e}. Check model architectures.")
+            else:
+                 try: # General fallback if direct copy might work
+                    self.distilbert.load_state_dict(source_model.distilbert.state_dict())
+                    print("PSCDistilBERT parameters copied (assuming compatible DistilBertModel structures).")
+                 except RuntimeError as e:
+                    print(f"PSCDistilBERT copy_parameters_from failed on general fallback: {e}. Check model architectures.")
+        else:
+            print("Error: Could not copy parameters for PSCDistilBERT. Source or target .distilbert attribute missing or invalid.")
