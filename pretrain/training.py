@@ -325,19 +325,19 @@ class PSCTrainer(nn.Module):
             )
             
             # --- Debugging MLM Loss ---
-            print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
+            # print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
             if student_mlm_loss is None:
                 student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=False) # Ensure it's a tensor and not None
-                print(f"DEBUG: student_mlm_loss was None, set to 0.0")
+                #print(f"DEBUG: student_mlm_loss was None, set to 0.0")
             elif not isinstance(student_mlm_loss, torch.Tensor):
                  student_mlm_loss = torch.tensor(float(student_mlm_loss), device=self.device, requires_grad=False) # Convert if it's a float/int
-                 print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
+                 #print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
             
             if torch.isnan(student_mlm_loss).any():
-                print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
+                #print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
                 # Potentially add more debug info here, like input shapes or label values
                 # For now, we might want to prevent NaN from propagating if it's an isolated issue
-                # student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True) # Or handle differently
+                student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True) # Or handle differently
 
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
@@ -364,14 +364,14 @@ class PSCTrainer(nn.Module):
             total_loss = contrastive_loss + self.args.distill_weight * futuretod_loss
             
             # --- Debugging All Losses ---
-            print(f"DEBUG Combined - Contrastive: {contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else contrastive_loss}, "
-                  f"Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
-                  f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
-                  f"FutureTOD: {futuretod_loss.item() if isinstance(futuretod_loss, torch.Tensor) else futuretod_loss}, "
-                  f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
+            # print(f"DEBUG Combined - Contrastive: {contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else contrastive_loss}, "
+            #       f"Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
+            #       f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
+            #       f"FutureTOD: {futuretod_loss.item() if isinstance(futuretod_loss, torch.Tensor) else futuretod_loss}, "
+            #       f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
             
-            if torch.isnan(total_loss).any():
-                print(f"DEBUG: NaN detected in total_loss (Combined Mode)!")
+            # if torch.isnan(total_loss).any():
+                #print(f"DEBUG: NaN detected in total_loss (Combined Mode)!")
                 # Trigger breakpoint or detailed dump if NaN
                 # import pdb; pdb.set_trace() 
 
@@ -465,17 +465,17 @@ class PSCTrainer(nn.Module):
             )
 
             # --- Debugging MLM Loss ---
-            print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
+            #print(f"DEBUG: student_mlm_loss from model: {student_mlm_loss}")
             if student_mlm_loss is None:
                 student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=False)
-                print(f"DEBUG: student_mlm_loss was None, set to 0.0")
+                #print(f"DEBUG: student_mlm_loss was None, set to 0.0")
             elif not isinstance(student_mlm_loss, torch.Tensor):
                  student_mlm_loss = torch.tensor(float(student_mlm_loss), device=self.device, requires_grad=False)
-                 print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
+                 #print(f"DEBUG: student_mlm_loss was not a Tensor, converted to Tensor: {student_mlm_loss}")
 
             if torch.isnan(student_mlm_loss).any():
-                print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
-                # student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                #print(f"DEBUG: NaN detected in student_mlm_loss immediately after model call!")
+                student_mlm_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
             with torch.no_grad():
                 teacher_cls_layers = self.teacher_model(
@@ -500,12 +500,12 @@ class PSCTrainer(nn.Module):
             total_loss = ldis_sum_layers + student_mlm_loss
 
             # --- Debugging All Losses ---
-            print(f"DEBUG Distill - Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
-                  f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
-                  f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
+            # print(f"DEBUG Distill - Ldis: {ldis_sum_layers.item() if isinstance(ldis_sum_layers, torch.Tensor) else ldis_sum_layers}, "
+            #       f"MLM: {student_mlm_loss.item() if isinstance(student_mlm_loss, torch.Tensor) else student_mlm_loss}, "
+            #       f"Total: {total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss}")
             
-            if torch.isnan(total_loss).any():
-                print(f"DEBUG: NaN detected in total_loss (Distill Mode)!")
+            # if torch.isnan(total_loss).any():
+            #     print(f"DEBUG: NaN detected in total_loss (Distill Mode)!")
                 # import pdb; pdb.set_trace()
 
             return total_loss, ldis_sum_layers, student_mlm_loss
