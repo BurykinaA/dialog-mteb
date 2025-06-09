@@ -63,48 +63,38 @@ def pair_loader_txt(args):
     return train_loader
 
 class FutureTODDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_len=512, mlm_probability=0.15):
+    def __init__(self, data_path, tokenizer, max_len=512, mlm_probability=0.15, delimiter='\t'):
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.mlm_probability = mlm_probability
-        with open(data_path, 'r') as f:
-            self.data = json.load(f)
+        self.data = []
+
+        with open(data_path, mode='r', encoding='utf-8') as file:
+            reader = csv.reader(file, delimiter=delimiter)
+            for row in reader:
+                if len(row) >= 2:
+                    # Column 0 is context, Column 1 is future
+                    context = row[0]
+                    future = row[1]
+                    self.data.append({'context': context, 'future': future})
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        dialogue = self.data[idx]
+        item = self.data[idx]
+        context_text = item['context']
+        future_text = item['future']
 
-        utterances = []
-        for turn in dialogue:
-            speaker_token = "[USR]" if turn['speaker'] == 'user' else "[SYS]"
-            utterance = f"{speaker_token} {turn['utterance']}"
-            utterances.append(utterance)
+        # Concatenate context and future for the teacher model input
+        full_text = context_text + " " + self.tokenizer.sep_token + " " + future_text
 
-        num_turns = len(utterances)
-        if num_turns < 2:
-            split_turn_idx = num_turns - 1
-        else:
-            # Split after a random turn, ensuring at least one turn in context and one in future
-            split_turn_idx = random.randint(0, num_turns - 2)
-
-        context_utterances = utterances[:split_turn_idx + 1]
-        future_utterances = utterances[split_turn_idx + 1:]
-        
-        selected_future_utterances = []
-        if len(future_utterances) > 0:
-            # Randomly select a number of future utterances to include
-            num_future_to_include = random.randint(1, len(future_utterances))
-            selected_future_utterances = future_utterances[:num_future_to_include]
-
-        context_text = " ".join(context_utterances)
-        full_text = " ".join(context_utterances + selected_future_utterances)
-
+        # Prepare student input (context) with Masked Language Modeling
         context_inputs = self.tokenizer(context_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
+        
+        # Prepare teacher input (full text)
         full_inputs = self.tokenizer(full_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
 
-        # Prepare for Masked Language Modeling on context
         context_input_ids = context_inputs['input_ids'].squeeze(0)
         labels = context_input_ids.clone()
 
@@ -117,7 +107,7 @@ class FutureTODDataset(Dataset):
 
         # 80% of the time, we replace masked input tokens with [MASK]
         indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
-        context_input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+        context_input_ids[indices_replaced] = self.tokenizer.mask_token_id
 
         # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
@@ -133,5 +123,6 @@ class FutureTODDataset(Dataset):
         }
 
 def get_dataloader(data_path, tokenizer, batch_size, max_len, shuffle=True):
-    dataloader = DataLoader(FutureTODDataset(data_path, tokenizer, max_len), batch_size=batch_size, shuffle=shuffle)
+    dataset = FutureTODDataset(data_path, tokenizer, max_len)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return dataloader
