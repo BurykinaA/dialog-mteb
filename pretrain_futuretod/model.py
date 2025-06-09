@@ -32,7 +32,7 @@ class PSCBert(nn.Module):
         """
         Update the teacher model with the student model's weights.
         """
-        self.teacher.load_state_dict(self.student.bert.state_dict())
+        self.teacher.load_state_dict(self.student.bert.state_dict(), strict=False)
 
     def forward(self, 
                 context_input_ids, 
@@ -76,27 +76,26 @@ class PSCBert(nn.Module):
 
 if __name__ == '__main__':
     from transformers import BertTokenizer
-    import json
+    import csv
     from dataloader import get_dataloader
 
+    # Example usage
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     special_tokens = ['[USR]', '[SYS]']
     tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
 
     model = PSCBert(num_special_tokens=len(special_tokens))
 
+    # Create a dummy data file for testing
     dummy_data = [
-        [
-            {"speaker": "user", "utterance": "Hello, I need help with my booking."},
-            {"speaker": "system", "utterance": "Sure, what is your booking reference?"},
-            {"speaker": "user", "utterance": "It's a gift for my friend."},
-            {"speaker": "system", "utterance": "Okay, I can help with that."}
-        ]
+        ["Hello, I need help with my booking. Sure, what is your booking reference?", "It's a gift for my friend. Okay, I can help with that."]
     ]
-    with open('dummy_data.json', 'w') as f:
-        json.dump(dummy_data, f)
+    dummy_filename = 'dummy_data.tsv'
+    with open(dummy_filename, 'w', newline='') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerows(dummy_data)
         
-    dataloader = get_dataloader('dummy_data.json', tokenizer, batch_size=2, max_len=128)
+    dataloader = get_dataloader(dummy_filename, tokenizer, batch_size=2, max_len=128)
     
     batch = next(iter(dataloader))
     
