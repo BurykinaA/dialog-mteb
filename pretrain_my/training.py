@@ -107,7 +107,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pretrain a sentence transformer model with self-distillation.")
     parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Model name from Hugging Face.")
-    parser.add_argument("--max_seq_length", type=int, default=60, help="Maximum sequence length.")
+    parser.add_argument("--max_seq_length", type=int, default=40, help="Maximum sequence length.")
     parser.add_argument("--batch_size", type=int, default=1024, help="Batch size for training.")
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate.")
     parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs.")
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="dialog-mteb-pretrain", help="W&B project name. If not provided, W&B is disabled.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name.")
     parser.add_argument("--datapath", type=str, default="./", help="Path to data directory.")
-    parser.add_argument("--dataname", type=str, default="dse_training_short.tsv", help="Name of data file in datapath.")
+    parser.add_argument("--dataname", type=str, default="data/data_todbert_pretrain/dse_training_short.tsv", help="Name of data file in datapath.")
     parser.add_argument("--loader_type", type=str, default="txt", choices=["txt", "csv"], help="Which data loader to use.")
     parser.add_argument("--temperature", type=float, default=0.07, help="Temperature for HardConLoss.")
     parser.add_argument("--contrast_type", type=str, default="HardNeg", choices=["Orig", "HardNeg"], help="Contrastive loss type.")

@@ -4,9 +4,9 @@
 # OUTPUT_DIR=$4
 
 MODEL_DIR='.'
-model_name='short_futuretod_bertbase_pretraindistill.HardNeg.epoch100.bertbase.dse_training_short.tsv.lr5e-05.lrscale100.bs32.tmp0.05.decay1.seed1.turn1/20'
+model_name='short_combined_model/epoch_15'
 DATA_DIR='data/_downstream_data'
-OUTPUT_DIR='short_futuretod'
+OUTPUT_DIR='short_combined'
 
 
 python evaluate/run_similarity.py \
