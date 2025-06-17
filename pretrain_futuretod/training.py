@@ -16,13 +16,15 @@ def main(args):
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    model_path = args.load_from_checkpoint if args.load_from_checkpoint else args.model_name
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     special_tokens = ['[USR]', '[SYS]']
     tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
 
     train_dataloader = get_dataloader(args.train_data_path, tokenizer, args.batch_size, args.max_len)
 
-    model = PSCBert(args.model_name, num_special_tokens=len(special_tokens))
+    model = PSCBert(model_path, num_special_tokens=len(special_tokens))
     model.to(device)
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
@@ -86,6 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_data_path", type=str, required=True, help="Path to the training data.")
     parser.add_argument("--output_dir", type=str, default="./saved_model", help="Directory to save model checkpoints.")
     parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Model name or path.")
+    parser.add_argument("--load_from_checkpoint", type=str, default=None, help="Path to a checkpoint to load model and tokenizer from.")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training.")
     parser.add_argument("--max_len", type=int, default=512, help="Maximum sequence length.")
