@@ -85,10 +85,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pretrain a sentence transformer model with self-distillation.")
-    parser.add_argument("--train_data_path", type=str, required=True, help="Path to the training data.")
+    parser.add_argument("--train_data_path", type=str, default="./data/data_todbert_pretrain/dse_training_short.tsv", help="Path to the training data.")
     parser.add_argument("--output_dir", type=str, default="./saved_model", help="Directory to save model checkpoints.")
     parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Model name or path.")
-    parser.add_argument("--load_from_checkpoint", type=str, default=None, help="Path to a checkpoint to load model and tokenizer from.")
+    parser.add_argument("--load_from_checkpoint", type=str, default='./short_futuretod_2/checkpoint-epoch-15', help="Path to a checkpoint to load model and tokenizer from.")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training.")
     parser.add_argument("--max_len", type=int, default=512, help="Maximum sequence length.")
