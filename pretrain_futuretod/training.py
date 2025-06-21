@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_every", type=int, default=5, help="Save model every N epochs.")
     parser.add_argument("--teacher_update_every", type=int, default=10, help="Update teacher model every N epochs.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to train on ('cuda' or 'cpu').")
-    parser.add_argument("--wandb_project", type=str, default="futuretod", help="W&B project name. If not provided, W&B is disabled.")
+    parser.add_argument("--wandb_project", type=str, default="dialog-mteb-pretrain", help="W&B project name. If not provided, W&B is disabled.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name.")
 
     args = parser.parse_args()

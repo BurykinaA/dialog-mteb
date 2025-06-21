@@ -3,9 +3,9 @@
 #evaluate/scripts/sim_check.sh
 
 MODEL_DIR='.'
-model_name='combined_bertbasecombined.HardNeg.epoch15.bertbase.dse_training.tsv.lr3e-06.lrscale100.bs1024.tmp0.05.decay1.seed1.turn1'
+model_name='short_futuretod_2/checkpoint-epoch-15'
 DATA_DIR='data/_downstream_data'
-OUTPUT_DIR='metrics_combined_baseline'
+OUTPUT_DIR='metrics_short_futuretod_2'
 
 # Find all epoch directories (modify pattern if needed)
 epochs=$(find ${MODEL_DIR}/${model_name} -type d -name "*" | sort -t '_' -k 2 -n)
