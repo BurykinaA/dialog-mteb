@@ -34,6 +34,7 @@ def main(args):
     for epoch in range(args.num_epochs):
         model.train()
         total_loss, total_mlm_loss, total_dist_loss = 0, 0, 0
+        total_cosine_loss, total_similarity_loss, total_triplet_loss = 0, 0, 0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{args.num_epochs}", leave=False)
         for batch in progress_bar:
             optimizer.zero_grad()
@@ -50,20 +51,46 @@ def main(args):
             total_loss += loss.item()
             total_mlm_loss += outputs['mlm_loss'].item()
             total_dist_loss += outputs['distillation_loss'].item()
+            total_cosine_loss += outputs['cosine_loss'].item()
+            total_similarity_loss += outputs['similarity_loss'].item()
+            total_triplet_loss += outputs['triplet_loss'].item()
+
             if args.wandb_project:
-                wandb.log({ "train_loss_step": loss.item(), "mlm_loss_step": outputs['mlm_loss'].item(), "distillation_loss_step": outputs['distillation_loss'].item(), "lr": scheduler.get_last_lr()[0] })
+                wandb.log({
+                    "train_loss_step": loss.item(),
+                    "mlm_loss_step": outputs['mlm_loss'].item(),
+                    "distillation_loss_step": outputs['distillation_loss'].item(),
+                    "cosine_loss_step": outputs['cosine_loss'].item(),
+                    "similarity_loss_step": outputs['similarity_loss'].item(),
+                    "triplet_loss_step": outputs['triplet_loss'].item(),
+                    "lr": scheduler.get_last_lr()[0]
+                })
             progress_bar.set_postfix({
                 'loss': loss.item(),
-                'mlm': outputs['mlm_loss'].item(),
-                'dist': outputs['distillation_loss'].item()
+                'dist': outputs['distillation_loss'].item(),
+                'cos': outputs['cosine_loss'].item(),
+                'sim': outputs['similarity_loss'].item(),
+                'trip': outputs['triplet_loss'].item()
             })
 
         avg_loss = total_loss / len(train_dataloader)
         avg_mlm_loss = total_mlm_loss / len(train_dataloader)
         avg_dist_loss = total_dist_loss / len(train_dataloader)
+        avg_cosine_loss = total_cosine_loss / len(train_dataloader)
+        avg_similarity_loss = total_similarity_loss / len(train_dataloader)
+        avg_triplet_loss = total_triplet_loss / len(train_dataloader)
+
         if args.wandb_project:
-            wandb.log({ "train_loss_epoch": avg_loss, "mlm_loss_epoch": avg_mlm_loss, "distillation_loss_epoch": avg_dist_loss, "epoch": epoch })
-        print(f"Epoch {epoch+1}: Train Loss = {avg_loss:.4f}, MLM Loss = {avg_mlm_loss:.4f}, Distillation Loss = {avg_dist_loss:.4f}")
+            wandb.log({
+                "train_loss_epoch": avg_loss,
+                "mlm_loss_epoch": avg_mlm_loss,
+                "distillation_loss_epoch": avg_dist_loss,
+                "cosine_loss_epoch": avg_cosine_loss,
+                "similarity_loss_epoch": avg_similarity_loss,
+                "triplet_loss_epoch": avg_triplet_loss,
+                "epoch": epoch
+            })
+        print(f"Epoch {epoch+1}: Train Loss = {avg_loss:.4f}, Dist Loss = {avg_dist_loss:.4f}, Cosine Loss = {avg_cosine_loss:.4f}, Sim Loss = {avg_similarity_loss:.4f}, Triplet Loss = {avg_triplet_loss:.4f}")
 
         if (epoch + 1) % args.teacher_update_every == 0:
             print(f"\nUpdating teacher model at end of epoch {epoch+1}")
@@ -96,6 +123,10 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps.")
     parser.add_argument("--save_every", type=int, default=5, help="Save model every N epochs.")
     parser.add_argument("--teacher_update_every", type=int, default=10, help="Update teacher model every N epochs.")
+    parser.add_argument("--cosine_loss_weight", type=float, default=10.0, help="Weight for cosine similarity loss.")
+    parser.add_argument("--similarity_loss_weight", type=float, default=200.0, help="Weight for similarity loss.")
+    parser.add_argument("--triplet_loss_weight", type=float, default=20.0, help="Weight for triplet loss.")
+    parser.add_argument("--triplet_margin", type=float, default=0.015, help="Margin for triplet loss.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to train on ('cuda' or 'cpu').")
     parser.add_argument("--wandb_project", type=str, default="dialog-mteb-pretrain", help="W&B project name. If not provided, W&B is disabled.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name.")
