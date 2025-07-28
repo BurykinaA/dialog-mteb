@@ -19,7 +19,7 @@ def main(args):
     model_path = args.load_from_checkpoint if args.load_from_checkpoint else args.model_name
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    special_tokens = ['[USR]', '[SYS]']
+    special_tokens = ['[USR]', '[SYS]'] #CLS
     tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
 
     train_dataloader = get_dataloader(args.train_data_path, tokenizer, args.batch_size, args.max_len)

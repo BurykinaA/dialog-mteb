@@ -4,9 +4,9 @@
 # OUTPUT_DIR=$4
 
 MODEL_DIR='.'
-model_name='short_futuretod_2/checkpoint-epoch-15'
+model_name='jasper_model/checkpoint-epoch-48'
 DATA_DIR='data/_downstream_data'
-OUTPUT_DIR='metrics_short_futuretod_2'
+OUTPUT_DIR="metrics_short_jasper"
 
 
 python evaluate/run_similarity.py \
