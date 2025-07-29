@@ -5,6 +5,7 @@ import wandb
 from tqdm.auto import tqdm
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
+import torch.nn.functional as F
 
 from model import PSCBert
 from dataloader import get_dataloader
@@ -41,28 +42,42 @@ def main(args):
             batch = {k: v.to(device) for k, v in batch.items()}
 
             outputs = model(**batch)
-            loss = outputs['loss']
+            mlm_loss = outputs['mlm_loss']
+            distillation_loss = outputs['distillation_loss']
 
+            # Combined loss
+            loss = mlm_loss + args.alpha * distillation_loss
+            
             loss.backward()
             optimizer.step()
             scheduler.step()
 
             total_loss += loss.item()
-            total_mlm_loss += outputs['mlm_loss'].item()
-            total_dist_loss += outputs['distillation_loss'].item()
+            total_mlm_loss += mlm_loss.item()
+            total_dist_loss += distillation_loss.item()
             if args.wandb_project:
-                wandb.log({ "train_loss_step": loss.item(), "mlm_loss_step": outputs['mlm_loss'].item(), "distillation_loss_step": outputs['distillation_loss'].item(), "lr": scheduler.get_last_lr()[0] })
+                wandb.log({
+                    "train_loss_step": loss.item(),
+                    "mlm_loss_step": mlm_loss.item(),
+                    "distillation_loss_step": distillation_loss.item(),
+                    "lr": scheduler.get_last_lr()[0]
+                })
             progress_bar.set_postfix({
                 'loss': loss.item(),
-                'mlm': outputs['mlm_loss'].item(),
-                'dist': outputs['distillation_loss'].item()
+                'mlm': mlm_loss.item(),
+                'dist': distillation_loss.item()
             })
 
         avg_loss = total_loss / len(train_dataloader)
         avg_mlm_loss = total_mlm_loss / len(train_dataloader)
         avg_dist_loss = total_dist_loss / len(train_dataloader)
         if args.wandb_project:
-            wandb.log({ "train_loss_epoch": avg_loss, "mlm_loss_epoch": avg_mlm_loss, "distillation_loss_epoch": avg_dist_loss, "epoch": epoch })
+            wandb.log({
+                "train_loss_epoch": avg_loss,
+                "mlm_loss_epoch": avg_mlm_loss,
+                "distillation_loss_epoch": avg_dist_loss,
+                "epoch": epoch
+            })
         print(f"Epoch {epoch+1}: Train Loss = {avg_loss:.4f}, MLM Loss = {avg_mlm_loss:.4f}, Distillation Loss = {avg_dist_loss:.4f}")
 
         if (epoch + 1) % args.teacher_update_every == 0:
@@ -75,7 +90,7 @@ def main(args):
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
             model_to_save = model.module if hasattr(model, 'module') else model
-            model_to_save.student.bert.save_pretrained(output_dir)
+            model_to_save.student.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
             print(f"Saved model checkpoint to {output_dir}")
 
@@ -88,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_data_path", type=str, default="pretrain_futuretod/processed_dialogues.txt", help="Path to the training data.")
     parser.add_argument("--output_dir", type=str, default="./saved_model", help="Directory to save model checkpoints.")
     parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Model name or path.")
-    parser.add_argument("--load_from_checkpoint", type=str, default='./short_futuretod_2/checkpoint-epoch-15', help="Path to a checkpoint to load model and tokenizer from.")
+    parser.add_argument("--load_from_checkpoint", type=str, default=None, help="Path to a checkpoint to load model and tokenizer from.")
     parser.add_argument("--num_epochs", type=int, default=100, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training.")
     parser.add_argument("--max_len", type=int, default=512, help="Maximum sequence length.")
@@ -96,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps.")
     parser.add_argument("--save_every", type=int, default=5, help="Save model every N epochs.")
     parser.add_argument("--teacher_update_every", type=int, default=10, help="Update teacher model every N epochs.")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Weight for distillation loss.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to train on ('cuda' or 'cpu').")
     parser.add_argument("--wandb_project", type=str, default="dialog-mteb-pretrain", help="W&B project name. If not provided, W&B is disabled.")
     parser.add_argument("--wandb_entity", type=str, default=None, help="W&B entity name.")

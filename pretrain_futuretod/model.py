@@ -48,7 +48,7 @@ class PSCBert(nn.Module):
             output_hidden_states=True
         )
         mlm_loss = student_outputs.loss
-        student_hidden_states = student_outputs.hidden_states
+        student_hidden = student_outputs.hidden_states[-1]
 
         with torch.no_grad():
             teacher_outputs = self.teacher(
@@ -56,19 +56,26 @@ class PSCBert(nn.Module):
                 attention_mask=full_attention_mask,
                 output_hidden_states=True
             )
-        teacher_hidden_states = teacher_outputs.hidden_states
+        teacher_hidden = teacher_outputs.hidden_states[-1]
 
-        distillation_loss = 0.0
-        loss_fct = nn.MSELoss()
-        for student_hs, teacher_hs in zip(student_hidden_states[1:], teacher_hidden_states[1:]):
-            student_cls = student_hs[:, 0, :]
-            teacher_cls = teacher_hs[:, 0, :]
-            distillation_loss += loss_fct(student_cls, teacher_cls)
+        # Distillation loss (Cosine Similarity)
+        # We need to align student and teacher hidden states for the context part.
+        seq_len = student_hidden.shape[1]
+        teacher_hidden_context = teacher_hidden[:, :seq_len, :]
 
-        total_loss = mlm_loss + distillation_loss
+        # Compute cosine similarity between student and teacher hidden states
+        cos_sim = F.cosine_similarity(student_hidden, teacher_hidden_context, dim=-1)
+
+        # Mask out padded tokens from the similarity score
+        masked_cos_sim = cos_sim * context_attention_mask
+
+        # Compute the mean similarity over non-padded tokens
+        mean_cos_sim = masked_cos_sim.sum() / context_attention_mask.sum()
         
+        # The distillation loss encourages the similarity to be close to 1
+        distillation_loss = 1 - mean_cos_sim
+
         return {
-            "loss": total_loss,
             "mlm_loss": mlm_loss,
             "distillation_loss": distillation_loss
         }
