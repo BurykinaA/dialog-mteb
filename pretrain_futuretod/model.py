@@ -75,17 +75,15 @@ class PSCBert(nn.Module):
         # Mask out padded tokens from the similarity score
         masked_cos_sim = cos_sim * context_attention_mask.float()
 
-        # Compute the mean similarity over non-padded tokens
-        num_valid_tokens = context_attention_mask.sum()
-        if num_valid_tokens > 0:
-            mean_cos_sim = masked_cos_sim.sum() / num_valid_tokens
-        else:
-            mean_cos_sim = torch.tensor(0.0, device=cos_sim.device)
+        # Compute the mean similarity PER SEQUENCE, then average across batch
+        num_valid_tokens_per_seq = context_attention_mask.sum(dim=1)  # [batch_size]
+        mean_cos_sim_per_seq = masked_cos_sim.sum(dim=1) / num_valid_tokens_per_seq.clamp(min=1)  # [batch_size]
+        mean_cos_sim = mean_cos_sim_per_seq.mean()  # Average across batch
         
         # Debug: Print similarity values
-        print(f"Mean cosine similarity: {mean_cos_sim.item()}")
-        print(f"Valid tokens: {num_valid_tokens.item()}")
-        print(f"Distillation loss: {(1 - mean_cos_sim).item()}")
+        print(f"Mean cosine similarity per sequence: {mean_cos_sim_per_seq}")
+        print(f"Overall mean cosine similarity: {mean_cos_sim.item()}")
+        print(f"Valid tokens per sequence: {num_valid_tokens_per_seq}")
         print("---")
         
         # The distillation loss encourages the similarity to be close to 1
