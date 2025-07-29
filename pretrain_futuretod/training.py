@@ -85,7 +85,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pretrain a sentence transformer model with self-distillation.")
-    parser.add_argument("--train_data_path", type=str, default="./data/data_todbert_pretrain/dse_training_short.tsv", help="Path to the training data.")
+    parser.add_argument("--train_data_path", type=str, default="pretrain_futuretod/processed_dialogues.txt", help="Path to the training data.")
     parser.add_argument("--output_dir", type=str, default="./saved_model", help="Directory to save model checkpoints.")
     parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Model name or path.")
     parser.add_argument("--load_from_checkpoint", type=str, default='./short_futuretod_2/checkpoint-epoch-15', help="Path to a checkpoint to load model and tokenizer from.")

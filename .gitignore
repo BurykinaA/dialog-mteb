@@ -36,3 +36,5 @@ Miniconda3-latest-Linux-x86_64.sh
 
 *HardNeg*/
 
+
+!pretrain_futuretod/processed_dialogues.txt
