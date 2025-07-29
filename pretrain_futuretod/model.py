@@ -64,10 +64,10 @@ class PSCBert(nn.Module):
         teacher_hidden_context = teacher_hidden[:, :seq_len, :]
 
         # Debug: Print shapes and some values
-        # print(f"Student hidden shape: {student_hidden.shape}")
-        # print(f"Teacher hidden shape: {teacher_hidden.shape}")
-        # print(f"Teacher context shape: {teacher_hidden_context.shape}")
-        # print(f"Context attention mask shape: {context_attention_mask.shape}")
+        print(f"Student hidden shape: {student_hidden.shape}")
+        print(f"Teacher hidden shape: {teacher_hidden.shape}")
+        print(f"Teacher context shape: {teacher_hidden_context.shape}")
+        print(f"Context attention mask shape: {context_attention_mask.shape}")
 
         # Compute cosine similarity between student and teacher hidden states
         cos_sim = F.cosine_similarity(student_hidden, teacher_hidden_context, dim=-1)
@@ -83,8 +83,10 @@ class PSCBert(nn.Module):
             mean_cos_sim = torch.tensor(0.0, device=cos_sim.device)
         
         # Debug: Print similarity values
-        # print(f"Mean cosine similarity: {mean_cos_sim.item()}")
-        # print(f"Valid tokens: {num_valid_tokens.item()}")
+        print(f"Mean cosine similarity: {mean_cos_sim.item()}")
+        print(f"Valid tokens: {num_valid_tokens.item()}")
+        print(f"Distillation loss: {(1 - mean_cos_sim).item()}")
+        print("---")
         
         # The distillation loss encourages the similarity to be close to 1
         distillation_loss = 1 - mean_cos_sim

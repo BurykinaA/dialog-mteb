@@ -48,10 +48,6 @@ class FutureTODDataset(Dataset):
             turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
         
         num_turns = len(turns)
-        if num_turns < 2:
-            # Create dummy data if parsing fails
-            turns = ["[USR] dummy context", "[SYS] dummy response"]
-            num_turns = 2
 
         num_context_turns = random.randint(1, num_turns - 1)
         
@@ -64,26 +60,18 @@ class FutureTODDataset(Dataset):
 
         if P == 'All':
             F = len(future_turns)
-            if F > 0:
-                L = random.randint(1, F)
-                future_subset_turns = future_turns[:L]
-            else:
-                future_subset_turns = ["[SYS] dummy future"]
+            L = random.randint(1, F)
+            future_subset_turns = future_turns[:L]
         else:
             future_subset_turns = future_turns[:P]
         
         future_text = " ".join(future_subset_turns).strip()
 
-        # Ensure we have some future text
-        if not future_text:
-            future_text = "[SYS] dummy future text"
-
         full_text = context_text + " " + self.tokenizer.sep_token + " " + future_text
 
-        print(f"Context text: {context_text[:100]}...")
-        print(f"Future text: {future_text[:100]}...")
-
-        print(f"Full text: {full_text[:150]}...")
+        # print(f"Context text: {context_text[:100]}...")
+        # print(f"Future text: {future_text[:100]}...")
+        # print(f"Full text: {full_text[:150]}...")
 
         context_inputs = self.tokenizer(context_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
         
