@@ -79,13 +79,7 @@ class PSCBert(nn.Module):
         num_valid_tokens_per_seq = context_attention_mask.sum(dim=1)  # [batch_size]
         mean_cos_sim_per_seq = masked_cos_sim.sum(dim=1) / num_valid_tokens_per_seq.clamp(min=1)  # [batch_size]
         mean_cos_sim = mean_cos_sim_per_seq.mean()  # Average across batch
-        
-        # Debug: Print similarity values
-        print(f"Mean cosine similarity per sequence: {mean_cos_sim_per_seq}")
-        print(f"Overall mean cosine similarity: {mean_cos_sim.item()}")
-        print(f"Valid tokens per sequence: {num_valid_tokens_per_seq}")
-        print("---")
-        
+
         # The distillation loss encourages the similarity to be close to 1
         distillation_loss = 1 - mean_cos_sim
 
