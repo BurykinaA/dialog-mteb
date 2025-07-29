@@ -27,7 +27,7 @@ class FutureTODDataset(Dataset):
                         self.data.append(dialogue)
 
     def __len__(self):
-        return 2#len(self.data)
+        return len(self.data)
 
     def __getitem__(self, idx):
         dialogue = self.data[idx]
