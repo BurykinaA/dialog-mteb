@@ -53,7 +53,7 @@ class FutureTODDataset(Dataset):
         
         future_text = "".join(future_subset_turns).strip()
 
-        full_text = context_text + future_text
+        full_text = context_text + " " + self.tokenizer.sep_token + " " + future_text
 
         context_inputs = self.tokenizer(context_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
         
