@@ -26,7 +26,7 @@ class PSCBert(nn.Module):
         for param in self.teacher.parameters():
             param.requires_grad = False
 
-        self.update_teacher()
+        # self.update_teacher()
 
     def update_teacher(self):
         """
@@ -64,10 +64,10 @@ class PSCBert(nn.Module):
         teacher_hidden_context = teacher_hidden[:, :seq_len, :]
 
         # Debug: Print shapes and some values
-        print(f"Student hidden shape: {student_hidden.shape}")
-        print(f"Teacher hidden shape: {teacher_hidden.shape}")
-        print(f"Teacher context shape: {teacher_hidden_context.shape}")
-        print(f"Context attention mask shape: {context_attention_mask.shape}")
+        # print(f"Student hidden shape: {student_hidden.shape}")
+        # print(f"Teacher hidden shape: {teacher_hidden.shape}")
+        # print(f"Teacher context shape: {teacher_hidden_context.shape}")
+        # print(f"Context attention mask shape: {context_attention_mask.shape}")
 
         # Compute cosine similarity between student and teacher hidden states
         cos_sim = F.cosine_similarity(student_hidden, teacher_hidden_context, dim=-1)
