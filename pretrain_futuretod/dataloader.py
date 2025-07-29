@@ -32,28 +32,58 @@ class FutureTODDataset(Dataset):
     def __getitem__(self, idx):
         dialogue = self.data[idx]
 
-        turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
+        # More robust turn splitting
+        import re
+        # Split on [USR] or [SYS] and keep the delimiters
+        parts = re.split(r'(\[(?:USR|SYS)\])', dialogue)
+        
+        turns = []
+        for i in range(1, len(parts), 2):  # Skip the first empty part, then take pairs
+            if i + 1 < len(parts):
+                turn = parts[i] + parts[i + 1]
+                turns.append(turn.strip())
+        
+        if len(turns) < 2:
+            # Fallback to original method if new method fails
+            turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
+        
         num_turns = len(turns)
+        if num_turns < 2:
+            # Create dummy data if parsing fails
+            turns = ["[USR] dummy context", "[SYS] dummy response"]
+            num_turns = 2
 
         num_context_turns = random.randint(1, num_turns - 1)
         
         context_turns = turns[:num_context_turns]
         future_turns = turns[num_context_turns:]
 
-        context_text = "".join(context_turns).strip()
+        context_text = " ".join(context_turns).strip()
 
         P = random.choice([1, 3, 5, 'All'])
 
         if P == 'All':
             F = len(future_turns)
-            L = random.randint(1, F)
-            future_subset_turns = future_turns[:L]
+            if F > 0:
+                L = random.randint(1, F)
+                future_subset_turns = future_turns[:L]
+            else:
+                future_subset_turns = ["[SYS] dummy future"]
         else:
             future_subset_turns = future_turns[:P]
         
-        future_text = "".join(future_subset_turns).strip()
+        future_text = " ".join(future_subset_turns).strip()
+
+        # Ensure we have some future text
+        if not future_text:
+            future_text = "[SYS] dummy future text"
 
         full_text = context_text + " " + self.tokenizer.sep_token + " " + future_text
+
+        print(f"Context text: {context_text[:100]}...")
+        print(f"Future text: {future_text[:100]}...")
+
+        print(f"Full text: {full_text[:150]}...")
 
         context_inputs = self.tokenizer(context_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
         
