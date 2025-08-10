@@ -22,11 +22,13 @@ class PSCBert(nn.Module):
         teacher_config = AutoConfig.from_pretrained(model_name)
         student_config.hidden_dropout_prob = dropout_prob
         student_config.attention_probs_dropout_prob = dropout_prob
+        student_config.output_hidden_states = True
         teacher_config.hidden_dropout_prob = dropout_prob
         teacher_config.attention_probs_dropout_prob = dropout_prob
+        teacher_config.output_hidden_states = True
 
-        self.student = BertForMaskedLM.from_pretrained(model_name, config=student_config, output_hidden_states=True)
-        self.teacher = BertModel.from_pretrained(model_name, config=teacher_config, output_hidden_states=True)
+        self.student = BertForMaskedLM.from_pretrained(model_name, config=student_config)
+        self.teacher = BertModel.from_pretrained(model_name, config=teacher_config)
         
         if num_special_tokens > 0:
             self.student.resize_token_embeddings(self.student.config.vocab_size + num_special_tokens)
@@ -34,6 +36,8 @@ class PSCBert(nn.Module):
 
         for param in self.teacher.parameters():
             param.requires_grad = False
+
+        # self.update_teacher()
 
     def update_teacher(self):
         """
@@ -55,8 +59,7 @@ class PSCBert(nn.Module):
         student_outputs = self.student(
             input_ids=context_input_ids,
             attention_mask=context_attention_mask,
-            labels=context_mlm_labels,
-            output_hidden_states=True
+            labels=context_mlm_labels
         )
         mlm_loss = student_outputs.loss
         student_hidden_states = student_outputs.hidden_states  # Tuple: [embeddings, layer1, ..., layer12]
@@ -65,8 +68,7 @@ class PSCBert(nn.Module):
         with torch.no_grad():
             teacher_outputs = self.teacher(
                 input_ids=full_input_ids,
-                attention_mask=full_attention_mask,
-                output_hidden_states=True
+                attention_mask=full_attention_mask
             )
         teacher_hidden_states = teacher_outputs.hidden_states
 
