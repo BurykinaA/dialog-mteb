@@ -14,22 +14,11 @@ from torch.cuda.amp import autocast, GradScaler
 
 
 class PSCBert(nn.Module):
-    def __init__(self, model_name='bert-base-uncased', num_special_tokens=0, dropout_prob=0.2):
+    def __init__(self, model_name='bert-base-uncased', num_special_tokens=0):
         super(PSCBert, self).__init__()
+        self.student = BertForMaskedLM.from_pretrained(model_name, output_hidden_states=True)
+        self.teacher = BertModel.from_pretrained(model_name, output_hidden_states=True)
 
-        # Configure dropout to 0.2 as per paper
-        student_config = AutoConfig.from_pretrained(model_name)
-        teacher_config = AutoConfig.from_pretrained(model_name)
-        student_config.hidden_dropout_prob = dropout_prob
-        student_config.attention_probs_dropout_prob = dropout_prob
-        student_config.output_hidden_states = True
-        teacher_config.hidden_dropout_prob = dropout_prob
-        teacher_config.attention_probs_dropout_prob = dropout_prob
-        teacher_config.output_hidden_states = True
-
-        self.student = BertForMaskedLM.from_pretrained(model_name, config=student_config)
-        self.teacher = BertModel.from_pretrained(model_name, config=teacher_config)
-        
         if num_special_tokens > 0:
             self.student.resize_token_embeddings(self.student.config.vocab_size + num_special_tokens)
             self.teacher.resize_token_embeddings(self.teacher.config.vocab_size + num_special_tokens)
@@ -51,47 +40,51 @@ class PSCBert(nn.Module):
                 context_mlm_labels,
                 full_input_ids, 
                 full_attention_mask):
-        
-        # Ensure teacher runs in eval mode for stable targets
-        self.teacher.eval()
-
-        # Student forward with MLM on context only
         student_outputs = self.student(
             input_ids=context_input_ids,
             attention_mask=context_attention_mask,
-            labels=context_mlm_labels
+            labels=context_mlm_labels,
+            output_hidden_states=True
         )
         mlm_loss = student_outputs.loss
-        student_hidden_states = student_outputs.hidden_states  # Tuple: [embeddings, layer1, ..., layer12]
-
-        # Teacher forward on context + future (no gradient)
+        student_hidden = student_outputs.hidden_states[-1]
         with torch.no_grad():
             teacher_outputs = self.teacher(
                 input_ids=full_input_ids,
-                attention_mask=full_attention_mask
+                attention_mask=full_attention_mask,
+                output_hidden_states=True
             )
-        teacher_hidden_states = teacher_outputs.hidden_states
+        teacher_hidden = teacher_outputs.hidden_states[-1]
 
-        # Distillation loss: sum of L2 between CLS representations across all transformer layers
-        # Skip index 0 which corresponds to embeddings
-        num_layers = min(len(student_hidden_states), len(teacher_hidden_states))
-        distillation_loss = 0.0
-        for layer_index in range(1, num_layers):
-            student_cls = student_hidden_states[layer_index][:, 0, :]  # CLS token
-            teacher_cls = teacher_hidden_states[layer_index][:, 0, :]
-            distillation_loss = distillation_loss + F.mse_loss(student_cls, teacher_cls, reduction='mean')
+        # Distillation loss (Cosine Similarity)
+        # We need to align student and teacher hidden states for the context part.
+        seq_len = student_hidden.shape[1]
+        teacher_hidden_context = teacher_hidden[:, :seq_len, :]
+
+        # Debug: Print shapes and some values
+        # print(f"Student hidden shape: {student_hidden.shape}")
+        # print(f"Teacher hidden shape: {teacher_hidden.shape}")
+        # print(f"Teacher context shape: {teacher_hidden_context.shape}")
+        # print(f"Context attention mask shape: {context_attention_mask.shape}")
+
+        # Compute cosine similarity between student and teacher hidden states
+        cos_sim = F.cosine_similarity(student_hidden, teacher_hidden_context, dim=-1)
+
+        # Mask out padded tokens from the similarity score
+        masked_cos_sim = cos_sim * context_attention_mask.float()
+
+        # Compute the mean similarity PER SEQUENCE, then average across batch
+        num_valid_tokens_per_seq = context_attention_mask.sum(dim=1)  # [batch_size]
+        mean_cos_sim_per_seq = masked_cos_sim.sum(dim=1) / num_valid_tokens_per_seq.clamp(min=1)  # [batch_size]
+        mean_cos_sim = mean_cos_sim_per_seq.mean()  # Average across batch
+
+        # The distillation loss encourages the similarity to be close to 1
+        distillation_loss = 1 - mean_cos_sim
 
         return {
             "mlm_loss": mlm_loss,
             "distillation_loss": distillation_loss
         }
-
-    def train(self, mode: bool = True):
-        super().train(mode)
-        # Keep teacher in eval mode regardless of student mode
-        self.teacher.eval()
-        return self
-
 
 if __name__ == '__main__':
     from transformers import BertTokenizer
@@ -113,12 +106,6 @@ if __name__ == '__main__':
     with open(dummy_filename, 'w', newline='') as f:
         writer = csv.writer(f, delimiter='\t')
         writer.writerows(dummy_data)
-        
+
     dataloader = get_dataloader(dummy_filename, tokenizer, batch_size=2, max_len=128)
     
-    batch = next(iter(dataloader))
-    
-    outputs = model(**batch)
-    print("Total loss:", outputs['loss'].item())
-    print("MLM loss:", outputs['mlm_loss'].item())
-    print("Distillation loss:", outputs['distillation_loss'].item())
