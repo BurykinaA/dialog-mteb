@@ -33,7 +33,7 @@ class PSCBert(nn.Module):
         self.triplet_loss_weight = triplet_loss_weight
         self.triplet_margin = triplet_margin
 
-        self.update_teacher()
+        #self.update_teacher()
 
     def update_teacher(self):
         """

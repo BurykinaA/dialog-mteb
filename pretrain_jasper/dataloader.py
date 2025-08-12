@@ -7,6 +7,7 @@ import torch
 import json
 from transformers import BertTokenizer
 import random
+import re
 
 class PairSamples(Dataset):
     def __init__(self, train_x1, train_x2, pairsimi):
@@ -69,47 +70,109 @@ class FutureTODDataset(Dataset):
         self.mlm_probability = mlm_probability
         self.data = []
 
-        with open(data_path, mode='r', encoding='utf-8') as file:
-            reader = csv.reader(file, delimiter=delimiter)
-            for row in reader:
-                if len(row) >= 2:
-                    # Column 0 is context, Column 1 is future
-                    context = row[0]
-                    future = row[1]
-                    self.data.append({'context': context, 'future': future})
+        ext = os.path.splitext(data_path)[1].lower()
+        # Support both .txt (one dialogue per line) and CSV/TSV (dialogue possibly in a column)
+        if ext == ".txt":
+            with open(data_path, mode='r', encoding='utf-8') as f:
+                for line in f:
+                    dialogue = line.strip()
+                    if not dialogue:
+                        continue
+                    # Keep only dialogues with at least two turns
+                    turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
+                    if len(turns) >= 2:
+                        self.data.append(dialogue)
+        else:
+            delim = '\t' if ext in ['.tsv', '.tab'] else delimiter
+            with open(data_path, mode='r', encoding='utf-8') as file:
+                reader = csv.reader(file, delimiter=delim)
+                for row in reader:
+                    dialogue = None
+                    # If there are 3+ columns, try the 3rd one (legacy format)
+                    if len(row) >= 3:
+                        dialogue = row[2]
+                    elif len(row) == 1:
+                        dialogue = row[0]
+                    elif len(row) > 0:
+                        dialogue = " ".join(row)
+                    if dialogue:
+                        turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
+                        if len(turns) >= 2:
+                            self.data.append(dialogue)
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        item = self.data[idx]
-        context_text = item['context']
-        future_text = item['future']
+        dialogue = self.data[idx]
 
-        # Concatenate context and future for the teacher model input
-        full_text = context_text + " " + self.tokenizer.sep_token + " " + future_text
+        # Robust turn splitting: split on [USR] or [SYS] and keep delimiters
+        parts = re.split(r'(\[(?:USR|SYS)\])', dialogue)
+        turns = []
+        for i in range(1, len(parts), 2):
+            if i + 1 < len(parts):
+                turn = parts[i] + parts[i + 1]
+                turn = turn.strip()
+                if turn:
+                    turns.append(turn)
 
-        # Prepare student input (context) with Masked Language Modeling
-        context_inputs = self.tokenizer(context_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
-        
-        # Prepare teacher input (full text)
-        full_inputs = self.tokenizer(full_text, max_length=self.max_len, padding='max_length', truncation=True, return_tensors="pt")
+        if len(turns) < 2:
+            # Fallback to original method if new method fails
+            turns = re.findall(r'(\[(?:USR|SYS)\].*?)(?=\[USR\]|\[SYS\]|$)', dialogue)
+
+        num_turns = len(turns)
+        # Ensure at least one context turn and one future turn
+        num_context_turns = random.randint(1, num_turns - 1)
+
+        context_turns = turns[:num_context_turns]
+        future_turns = turns[num_context_turns:]
+
+        context_text = " ".join(context_turns).strip()
+
+        # Randomly choose how many future turns to include
+        P = random.choice([1, 3, 5, 'All'])
+        if P == 'All':
+            F = len(future_turns)
+            L = random.randint(1, F)
+            future_subset_turns = future_turns[:L]
+        else:
+            future_subset_turns = future_turns[:P]
+
+        future_text = " ".join(future_subset_turns).strip()
+
+        # Tokenize context for MLM
+        context_inputs = self.tokenizer(
+            context_text,
+            max_length=self.max_len,
+            padding='max_length',
+            truncation=True,
+            return_tensors="pt"
+        )
+
+        # IMPORTANT: For contrastive learning, treat "full" as the FUTURE side so
+        # the model can compute similarity/contrastive losses between context and future.
+        future_inputs = self.tokenizer(
+            future_text,
+            max_length=self.max_len,
+            padding='max_length',
+            truncation=True,
+            return_tensors="pt"
+        )
 
         context_input_ids = context_inputs['input_ids'].squeeze(0)
         labels = context_input_ids.clone()
 
+        # Create MLM labels on the context only
         probability_matrix = torch.full(labels.shape, self.mlm_probability)
         special_tokens_mask = self.tokenizer.get_special_tokens_mask(labels.tolist(), already_has_special_tokens=True)
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
 
         masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+        labels[~masked_indices] = -100
 
-        # 80% of the time, we replace masked input tokens with [MASK]
         indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
         context_input_ids[indices_replaced] = self.tokenizer.mask_token_id
 
-        # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
         random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
         context_input_ids[indices_random] = random_words[indices_random]
@@ -118,8 +181,9 @@ class FutureTODDataset(Dataset):
             'context_input_ids': context_input_ids,
             'context_attention_mask': context_inputs['attention_mask'].squeeze(0),
             'context_mlm_labels': labels,
-            'full_input_ids': full_inputs['input_ids'].squeeze(0),
-            'full_attention_mask': full_inputs['attention_mask'].squeeze(0),
+            # full_* now carry FUTURE tokens to be used for contrastive/similarity losses with context
+            'full_input_ids': future_inputs['input_ids'].squeeze(0),
+            'full_attention_mask': future_inputs['attention_mask'].squeeze(0),
         }
 
 def get_dataloader(data_path, tokenizer, batch_size, max_len, shuffle=True):
