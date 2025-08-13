@@ -38,3 +38,4 @@ Miniconda3-latest-Linux-x86_64.sh
 
 
 !pretrain_futuretod/processed_dialogues.txt
+!pretrain_jasper/processed_dialogues.txt
