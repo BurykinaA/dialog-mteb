@@ -8,6 +8,7 @@ import json
 from transformers import BertTokenizer
 import random
 import re
+import logging
 
 class PairSamples(Dataset):
     def __init__(self, train_x1, train_x2, pairsimi):
@@ -140,6 +141,10 @@ class FutureTODDataset(Dataset):
 
         future_text = " ".join(future_subset_turns).strip()
 
+        logging.info(f"\n--- Sample {idx} ---")
+        logging.info(f"Context: {context_text}")
+        logging.info(f"Future: {future_text}")
+
         # Tokenize context for MLM
         context_inputs = self.tokenizer(
             context_text,
@@ -190,3 +195,37 @@ def get_dataloader(data_path, tokenizer, batch_size, max_len, shuffle=True):
     dataset = FutureTODDataset(data_path, tokenizer, max_len)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return dataloader
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    # Assumes script is run from the project root.
+    data_path = 'pretrain_jasper/processed_dialogues.txt'
+    
+    if not os.path.exists(data_path):
+        logging.error(f"Data file not found at '{data_path}'. Please ensure the file exists.")
+    else:
+        logging.info(f"Loading data from: {data_path}")
+
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        
+        # You can adjust max_len if needed for your specific data.
+        dataset = FutureTODDataset(data_path=data_path, tokenizer=tokenizer, max_len=512)
+        
+        logging.info(f"Dataset size: {len(dataset)}")
+
+        if len(dataset) > 0:
+            logging.info("\n--- Showing 3 samples from the dataset (logged from __getitem__) ---")
+            for i in range(min(3, len(dataset))):
+                _ = dataset[i] # This will trigger the logging in __getitem__
+
+            # To check with DataLoader:
+            dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
+            
+            try:
+                logging.info("\n--- Checking a batch from DataLoader (items will be logged from __getitem__) ---")
+                batch = next(iter(dataloader))
+                logging.info(f"Batch keys: {list(batch.keys())}")
+                logging.info("--- Batch check complete ---")
+            except StopIteration:
+                logging.warning("DataLoader is empty, cannot check batch.")
