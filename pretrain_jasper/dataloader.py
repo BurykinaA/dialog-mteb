@@ -9,6 +9,7 @@ from transformers import BertTokenizer
 import random
 import re
 import logging
+from torch.utils.data.distributed import DistributedSampler
 
 class PairSamples(Dataset):
     def __init__(self, train_x1, train_x2, pairsimi):
@@ -191,9 +192,96 @@ class FutureTODDataset(Dataset):
             'full_attention_mask': future_inputs['attention_mask'].squeeze(0),
         }
 
-def get_dataloader(data_path, tokenizer, batch_size, max_len, shuffle=True):
-    dataset = FutureTODDataset(data_path, tokenizer, max_len)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+class DialogueDataset(Dataset):
+    def __init__(self, data_path, tokenizer, max_len=512):
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.data = []
+        
+        with open(data_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f, delimiter='\t')
+            for row in reader:
+                if len(row) >= 2:
+                    self.data.append(row[:2])  # Take first two columns
+                    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        context, full_dialogue = self.data[idx]
+        
+        # Tokenize context (for MLM)
+        context_encoding = self.tokenizer(
+            context,
+            truncation=True,
+            padding='max_length',
+            max_length=self.max_len,
+            return_tensors='pt'
+        )
+        
+        # Tokenize full dialogue (for teacher)
+        full_encoding = self.tokenizer(
+            full_dialogue,
+            truncation=True,
+            padding='max_length',
+            max_length=self.max_len,
+            return_tensors='pt'
+        )
+        
+        # Create MLM labels for context
+        context_input_ids = context_encoding['input_ids'].squeeze()
+        context_mlm_labels = context_input_ids.clone()
+        
+        # Apply MLM masking (15% of tokens)
+        mask_prob = 0.15
+        special_tokens = [self.tokenizer.cls_token_id, self.tokenizer.sep_token_id, self.tokenizer.pad_token_id]
+        
+        for i in range(len(context_input_ids)):
+            if context_input_ids[i] not in special_tokens and random.random() < mask_prob:
+                rand = random.random()
+                if rand < 0.8:  # 80% replace with [MASK]
+                    context_input_ids[i] = self.tokenizer.mask_token_id
+                elif rand < 0.9:  # 10% replace with random token
+                    context_input_ids[i] = random.randint(1, self.tokenizer.vocab_size - 1)
+                # 10% keep original
+            else:
+                context_mlm_labels[i] = -100  # Ignore in loss calculation
+        
+        return {
+            'context_input_ids': context_input_ids,
+            'context_attention_mask': context_encoding['attention_mask'].squeeze(),
+            'context_mlm_labels': context_mlm_labels,
+            'full_input_ids': full_encoding['input_ids'].squeeze(),
+            'full_attention_mask': full_encoding['attention_mask'].squeeze(),
+        }
+
+
+def get_dataloader(data_path, tokenizer, batch_size=32, max_len=512, distributed=False, world_size=1, rank=0):
+    dataset = DialogueDataset(data_path, tokenizer, max_len)
+    
+    if distributed:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            num_workers=4,
+            pin_memory=True
+        )
+    else:
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+    
     return dataloader
 
 if __name__ == "__main__":
