@@ -10,6 +10,10 @@ from tqdm.auto import tqdm
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup, AutoTokenizer
 
+# Set environment variables for better resource management
+# os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+# os.environ['OMP_NUM_THREADS'] = '1'
+
 from model import PSCBert
 from dataloader import get_dataloader
 
@@ -60,7 +64,8 @@ def cleanup_distributed(world_size):
     """Clean up distributed training."""
     if world_size > 1:
         try:
-            dist.destroy_process_group()
+            if dist.is_initialized():
+                dist.destroy_process_group()
         except Exception as e:
             print(f"Warning: Error during cleanup: {e}")
 
@@ -243,6 +248,16 @@ def train_worker(rank, world_size, accessible_devices, args):
         print(f"Error in train_worker (rank {rank}): {e}")
         raise e
     finally:
+        # Ensure proper cleanup
+        if world_size > 1:
+            try:
+                torch.cuda.synchronize()
+                if hasattr(model, 'module'):
+                    del model.module
+                del model
+                torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"Warning: Error during model cleanup: {e}")
         cleanup_distributed(world_size)
 
 
@@ -263,7 +278,11 @@ def main(args):
     
     if actual_world_size > 1:
         print(f"Starting distributed training with {actual_world_size} GPUs")
-        mp.spawn(train_worker, args=(actual_world_size, accessible_devices, args), nprocs=actual_world_size, join=True)
+        try:
+            mp.spawn(train_worker, args=(actual_world_size, accessible_devices, args), nprocs=actual_world_size, join=True)
+        finally:
+            # Additional cleanup after all processes finish
+            torch.cuda.empty_cache()
     else:
         print(f"Starting single GPU training on device {accessible_devices[0]}")
         train_worker(0, 1, accessible_devices, args)
