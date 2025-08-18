@@ -68,7 +68,7 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
         self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
 
-        self.init_weights()
+        #self.init_weights()
 
     def forward(self,
                 input_ids=None,
@@ -171,17 +171,18 @@ class GeneralModelForNaturalLanguageInference(PreTrainedModel):
 
         outputs = (seq_logits,)
         if labels is not None:
-            seq_loss_fct = nn.CrossEntropyLoss().cuda()
+            seq_loss_fct = nn.CrossEntropyLoss().to(seq_logits.device)
             loss = seq_loss_fct(seq_logits, labels)
             outputs = (loss,) + outputs
 
         return outputs
-    
+     
     def get_embeddings(self, input_ids, attention_mask):
         if self.pooling == "average":
             outputs = self.encoder.forward(input_ids=input_ids, attention_mask=attention_mask)
             attention_mask = attention_mask.unsqueeze(-1)
-            embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+            denom = torch.sum(attention_mask, dim=1).clamp(min=1e-6)
+            embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / denom
         elif self.pooling == "cls":
             outputs = self.encoder.forward(input_ids=input_ids, attention_mask=attention_mask)
             embeddings = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
@@ -194,6 +195,8 @@ class GeneralModelForDialogueActionPrediction(PreTrainedModel):
     def __init__(self, config, model_name, **kwargs):
         super().__init__(config)
         self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        for p in self.encoder.parameters():
+            p.requires_grad = True
         self.emb_size = config.hidden_size
         self.classifier_dropout = 0.2
         self.num_labels = config.num_labels
@@ -201,8 +204,7 @@ class GeneralModelForDialogueActionPrediction(PreTrainedModel):
         self.dropout = nn.Dropout(self.classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
         self.sigmoid = nn.Sigmoid()
-
-        self.init_weights()
+        # no self.init_weights()
         
     def forward(self, input_ids, attention_mask, labels=None):        
         pooled_output = self.get_mean_embeddings(input_ids, attention_mask)
@@ -221,13 +223,16 @@ class GeneralModelForDialogueActionPrediction(PreTrainedModel):
     def get_mean_embeddings(self, input_ids, attention_mask):
         outputs = self.encoder.forward(input_ids=input_ids, attention_mask=attention_mask)
         attention_mask = attention_mask.unsqueeze(-1)
-        embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+        denom = torch.sum(attention_mask, dim=1).clamp(min=1e-6)
+        embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / denom
         return embeddings
 
 class GeneralModelForResponseSelection(PreTrainedModel):
     def __init__(self, config, model_name, **kwargs):
         super().__init__(config)
         self.encoder = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        for p in self.encoder.parameters():
+            p.requires_grad = True
         
     def forward(self, input_ids_1, attention_mask_1, input_ids_2, attention_mask_2, method="mean"):  
         context_output = self.get_embeddings(input_ids_1, attention_mask_1, method=method)
@@ -238,7 +243,8 @@ class GeneralModelForResponseSelection(PreTrainedModel):
         if method == "mean":
             outputs = self.encoder.forward(input_ids=input_ids, attention_mask=attention_mask)
             attention_mask = attention_mask.unsqueeze(-1)
-            embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+            denom = torch.sum(attention_mask, dim=1).clamp(min=1e-6)
+            embeddings = torch.sum(outputs[0]*attention_mask, dim=1) / denom
         elif method == "cls":
             outputs = self.encoder.forward(input_ids=input_ids, attention_mask=attention_mask)
             embeddings = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
