@@ -236,7 +236,7 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
 
     optim = AdamW([{'params': crf_transitions_params, 'lr': args.crf_transition_lr},
                    {'params': crf_ratio_params, 'lr': args.crf_ratio_lr},
-                   {'params': bert_params}], lr=args.bert_lr)
+                   {'params': bert_params}], lr=args.bert_lr, weight_decay=args.weight_decay)
     total_steps = int(
         len(train_dataset) * args.epoch / (args.per_gpu_batch_size * args.gradient_accumulation_steps * args.n_gpu))
     scheduler = get_linear_schedule_with_warmup(optim, num_warmup_steps=int(total_steps * 0.05),
@@ -338,6 +338,7 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
             global_steps += 1
             loss = cur_loss.mean()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optim.step()
                 scheduler.step()
@@ -447,6 +448,8 @@ def main():
     parser.add_argument(
         "--device", default='cpu', type=str, help="Number of GPUs"
     )
+    parser.add_argument("--weight_decay", default=0.01, type=float, help="AdamW weight decay")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Gradient clipping norm")
 
     # for few-shot
     parser.add_argument(

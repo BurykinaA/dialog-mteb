@@ -141,9 +141,13 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
 
         outputs = (seq_logits,) + outputs[2:] 
         if labels is not None:
-            seq_loss_fct = nn.CrossEntropyLoss().cuda()
+            weight = self.weights.to(seq_logits.device) if getattr(self, "weights", None) is not None else None
+            seq_loss_fct = nn.CrossEntropyLoss(weight=weight).cuda()
             loss = seq_loss_fct(seq_logits, labels)
+            
             outputs = (loss,) + outputs
+
+            
             
 
         return outputs

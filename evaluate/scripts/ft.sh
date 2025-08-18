@@ -39,16 +39,16 @@ for dataset in bank77 hwu64 clinc150 snips; do
       --model_type "${MODEL_DIR}" \
       --TASK seq \
       --output_dir "${OUTPUT_DIR}/intent_ft/${RUN_ID}/${dataset}/${data_ratio}" \
-      --bert_lr 2e-5 \
-      --epoch 50 \
+      --bert_lr 3e-5 \
+      --epoch 200 \
       --max_seq_length 64 \
-      --per_gpu_batch_size 64 \
+      --per_gpu_batch_size 8 \
       --gradient_accumulation_steps 1 \
       --data_ratio "${data_ratio}" \
-      --num_runs 10 \
-      --patience 5 \
+      --num_runs 1 \
+      --patience 20 \
       --classification_pooling average \
-      --early_stop_type metric
+      --early_stop_type loss
   done
 done
 
@@ -62,13 +62,13 @@ for data_ratio in 500 1000; do
     --TASK rs \
     --output_dir "${OUTPUT_DIR}/rs_ft/${RUN_ID}/amazonqa/${data_ratio}" \
     --bert_lr 2e-5 \
-    --epoch 50 \
+    --epoch 200 \
     --max_seq_length 128 \
     --per_gpu_batch_size 64 \
     --gradient_accumulation_steps 1 \
     --data_ratio "${data_ratio}" \
-    --num_runs 2 \
-    --patience 3 \
+    --num_runs 1 \
+    --patience 20 \
     --eval_steps 50 \
     --concatenate
 done
@@ -84,13 +84,13 @@ for dataset in dstc2 sim_joint; do
       --TASK da \
       --output_dir "${OUTPUT_DIR}/da_concat_ft/${RUN_ID}/${dataset}/${data_ratio}" \
       --bert_lr 5e-5 \
-      --epoch 100 \
+      --epoch 200 \
       --max_seq_length 32 \
       --per_gpu_batch_size 16 \
       --gradient_accumulation_steps 1 \
       --data_ratio "${data_ratio}" \
-      --num_runs 5 \
-      --patience 3 \
+      --num_runs 1 \
+      --patience 20 \
       --eval_steps 30 \
       --num_turn 1 \
       --concatenate \
