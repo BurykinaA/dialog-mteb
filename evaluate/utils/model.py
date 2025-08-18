@@ -123,7 +123,8 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
         if self.model_name != "jxm/cde-small-v1":
             if self.pooling == "average":
                 attention_mask = attention_mask.unsqueeze(-1)
-                pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+                denom = torch.sum(attention_mask, dim=1).clamp(min=1e-6)
+                pooled_output = torch.sum(outputs[0] * attention_mask, dim=1) / denom
             elif self.pooling == "cls_nopool":
                 pooled_output = outputs[0][:, 0, :]
             elif self.pooling == "cls":
@@ -143,6 +144,7 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
             seq_loss_fct = nn.CrossEntropyLoss().cuda()
             loss = seq_loss_fct(seq_logits, labels)
             outputs = (loss,) + outputs
+            
 
         return outputs
 

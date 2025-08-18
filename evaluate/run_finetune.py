@@ -11,7 +11,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score, precision_recall_fscore_support, classification_report
 
-from transformers import BertConfig, AutoTokenizer
+
+from transformers import AutoConfig, AutoTokenizer
 from torch.optim import AdamW
 from transformers.optimization import get_linear_schedule_with_warmup
 
@@ -550,7 +551,7 @@ def main():
         print('model_type', args.model_type)
         print('--------------')
         MODEL_CLASS = get_model_class(args)
-        config = BertConfig.from_pretrained(args.model_type)
+        config = AutoConfig.from_pretrained(args.model_type)
         config.num_labels = num_seq_label
         config.classifier_dropout = args.classifier_dropout
         args.num_labels = config.num_labels
@@ -558,12 +559,12 @@ def main():
             if 'bert' in args.model_type:
                 model = MODEL_CLASS.from_pretrained(args.model_type, config=config, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
             else:
-                model = MODEL_CLASS.from_pretrained(args.model_type, config=config, model_name=args.model_type, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
+                model = MODEL_CLASS(config=config, model_name=args.model_type, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
         else:
             if 'bert' in args.model_type:
                 model = MODEL_CLASS.from_pretrained(args.model_type, config=config, weights=weights, pooling=args.classification_pooling)
             else:
-                model = MODEL_CLASS.from_pretrained(args.model_type, config=config, model_name=args.model_type, weights=weights, pooling=args.classification_pooling, train_dataset=train_dataset)
+                model = MODEL_CLASS(config=config,  model_name=args.model_type, weights=weights, pooling=args.classification_pooling, train_dataset=train_dataset)
         print('model', model)
         print('--------------')
         return model
