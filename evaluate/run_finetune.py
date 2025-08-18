@@ -307,7 +307,7 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
 
 
             # evaluation
-            if global_steps % eval_steps == 0:
+            if global_steps > 0 and global_steps % eval_steps == 0:
                 val_metric, val_loss = evaluate(val_dataset, model, args, prefix="Valid")
                 val_metric = val_metric['main']
                 if args.early_stop_type == "metric":
@@ -567,6 +567,10 @@ def main():
                 model = MODEL_CLASS(config=config,  model_name=args.model_type, weights=weights, pooling=args.classification_pooling, train_dataset=train_dataset)
         print('model', model)
         print('--------------')
+        # Log trainable vs total params
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        logger.info(f"Trainable params: {trainable} / {total}")
         return model
 
     # set data_ratio as -1 for full-data training
