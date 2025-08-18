@@ -11,7 +11,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score, precision_recall_fscore_support, classification_report
 
-from transformers import BertConfig, AutoTokenizer, AdamW
+from transformers import BertConfig, AutoTokenizer
+from torch.optim import AdamW
 from transformers.optimization import get_linear_schedule_with_warmup
 
 from utils.data import get_intent_slot_dataset, get_dialogue_action_dataset, \
