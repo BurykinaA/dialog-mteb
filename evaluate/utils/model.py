@@ -207,18 +207,20 @@ class GeneralModelForDialogueActionPrediction(PreTrainedModel):
 
         self.dropout = nn.Dropout(self.classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-        self.sigmoid = nn.Sigmoid()
-        # no self.init_weights()
+        self.pos_weight = kwargs.get("pos_weight", None)
         
     def forward(self, input_ids, attention_mask, labels=None):        
         pooled_output = self.get_mean_embeddings(input_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
         seq_logits = self.classifier(pooled_output)
-        seq_logits = self.sigmoid(seq_logits)
 
         outputs = (seq_logits,)
         if labels is not None:
-            seq_loss_fct = nn.BCELoss()
+            if self.pos_weight is not None:
+                pw = self.pos_weight.to(seq_logits.device)
+                seq_loss_fct = nn.BCEWithLogitsLoss(pos_weight=pw)
+            else:
+                seq_loss_fct = nn.BCEWithLogitsLoss()
             loss = seq_loss_fct(seq_logits, labels.float())
             outputs = (loss,) + outputs
 
@@ -377,7 +379,7 @@ class BertMultiTurnForDialogueActionPredictionConcat(BertPreTrainedModel):
 
         self.dropout = nn.Dropout(self.classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-        self.sigmoid = nn.Sigmoid()
+        self.pos_weight = kwargs.get("pos_weight", None)
 
         self.init_weights()
         
@@ -385,18 +387,19 @@ class BertMultiTurnForDialogueActionPredictionConcat(BertPreTrainedModel):
         pooled_output = self.get_mean_embeddings(input_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
         seq_logits = self.classifier(pooled_output)
-        seq_logits = self.sigmoid(seq_logits)
 
-        outputs = (seq_logits,)  # add hidden states and attention if they are here
+        outputs = (seq_logits,)
         if labels is not None:
-            # calculate sequence classification loss
-            seq_loss_fct = nn.BCELoss()
+            if self.pos_weight is not None:
+                pw = self.pos_weight.to(seq_logits.device)
+                seq_loss_fct = nn.BCEWithLogitsLoss(pos_weight=pw)
+            else:
+                seq_loss_fct = nn.BCEWithLogitsLoss()
             loss = seq_loss_fct(seq_logits, labels.float())
             outputs = (loss,) + outputs
 
         return outputs
 
-    
     def get_mean_embeddings(self, input_ids, attention_mask):
         # mean embeddings
         bert_output = self.bert.forward(input_ids=input_ids, attention_mask=attention_mask)
@@ -541,7 +544,7 @@ class DistilBertMultiTurnForDialogueActionPredictionConcat(DistilBertPreTrainedM
 
         self.dropout = nn.Dropout(self.classifier_dropout)
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
-        self.sigmoid = nn.Sigmoid()
+        self.pos_weight = kwargs.get("pos_weight", None)
 
         self.init_weights()
         
@@ -549,12 +552,14 @@ class DistilBertMultiTurnForDialogueActionPredictionConcat(DistilBertPreTrainedM
         pooled_output = self.get_mean_embeddings(input_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
         seq_logits = self.classifier(pooled_output)
-        seq_logits = self.sigmoid(seq_logits)
 
-        outputs = (seq_logits,)  # add hidden states and attention if they are here
+        outputs = (seq_logits,)
         if labels is not None:
-            # calculate sequence classification loss
-            seq_loss_fct = nn.BCELoss()
+            if self.pos_weight is not None:
+                pw = self.pos_weight.to(seq_logits.device)
+                seq_loss_fct = nn.BCEWithLogitsLoss(pos_weight=pw)
+            else:
+                seq_loss_fct = nn.BCEWithLogitsLoss()
             loss = seq_loss_fct(seq_logits, labels.float())
             outputs = (loss,) + outputs
 

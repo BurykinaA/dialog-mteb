@@ -8,13 +8,14 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score, precision_recall_fscore_support, classification_report
 
-
 from transformers import AutoConfig, AutoTokenizer
 from torch.optim import AdamW
-from transformers.optimization import get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
+from torch.cuda.amp import autocast, GradScaler
 
 from utils.data import get_intent_slot_dataset, get_dialogue_action_dataset, \
                  get_response_selection_dataset, get_nli_dataset
@@ -130,8 +131,9 @@ def evaluate(test_dataset, model, args, prefix="Test"):
                 attention_mask = batch['attention_mask'].to(args.device)
                 seq_labels = batch['seq_labels']
                 outputs = model(input_ids, attention_mask=attention_mask, labels=seq_labels)
-                seq_pred = outputs[1].cpu()
-                seq_pred = (seq_pred > 0.5).long()
+                logits = outputs[1].cpu()
+                prob = torch.sigmoid(logits)
+                seq_pred = (prob > 0.5).long()
 
                 all_seq_labels = torch.cat([all_seq_labels, seq_labels.cpu()])
                 all_seq_preds = torch.cat([all_seq_preds, seq_pred])
@@ -145,8 +147,10 @@ def evaluate(test_dataset, model, args, prefix="Test"):
                 response_input_ids = batch['response']['input_ids'].to(args.device)
                 response_attention_mask = batch['response']['attention_mask'].to(args.device)
                 context_output, response_output = model(context_input_ids, context_attention_mask, response_input_ids, response_attention_mask)
-
-                logits = torch.mm(context_output, response_output.t().contiguous())
+                if args.normalize_embeddings:
+                    context_output = F.normalize(context_output, p=2, dim=1)
+                    response_output = F.normalize(response_output, p=2, dim=1)
+                logits = torch.mm(context_output, response_output.t().contiguous()) / max(args.contrastive_temperature, 1e-6)
                 batch_size = logits.shape[0]
                 labels = torch.tensor(np.arange(batch_size)).to(logits.device)
                 cur_loss = loss_func(logits, labels)
@@ -217,38 +221,45 @@ Return:
     2. The best checkpoint
 '''
 def train(args, model, train_dataset, val_dataset, test_dataset):
-    crf_transitions = ['crf.transitions']
-    crf_ratio = ['crf.ratio']
-    crf_transitions_list = list(filter(lambda kv: kv[0] in crf_transitions, model.named_parameters()))
-    crf_ratio_list = list(filter(lambda kv: kv[0] in crf_ratio, model.named_parameters()))
-    bert_list = list(
-        filter(lambda kv: kv[0] not in crf_ratio and kv[0] not in crf_transitions, model.named_parameters()))
+    # Build param groups: separate classifier vs encoder
+    classifier_params = []
+    encoder_params = []
+    for n, p in model.named_parameters():
+        if any(k in n for k in ['crf.transitions', 'crf.ratio']):  # keep old branches covered below
+            continue
+        if 'classifier' in n:
+            classifier_params.append(p)
+        else:
+            encoder_params.append(p)
 
-    crf_transitions_params = []
-    crf_ratio_params = []
-    bert_params = []
-    for params in crf_transitions_list:
-        crf_transitions_params.append(params[1])
-    for params in crf_ratio_list:
-        crf_ratio_params.append(params[1])
-    for params in bert_list:
-        bert_params.append(params[1])
+    optim = AdamW(
+        [
+            {'params': encoder_params, 'lr': args.bert_lr},
+            {'params': classifier_params, 'lr': args.head_lr},
+        ],
+        lr=args.bert_lr,
+        weight_decay=args.weight_decay,
+        betas=(0.9, 0.98),
+        eps=1e-8,
+    )
+    
+    train_sampler = RandomSampler(train_dataset)
+    train_dataloader = DataLoader(train_dataset, batch_size=args.per_gpu_batch_size * max(args.n_gpu,1), sampler=train_sampler, num_workers=4, worker_init_fn=worker_init_fn)
 
-    optim = AdamW([{'params': crf_transitions_params, 'lr': args.crf_transition_lr},
-                   {'params': crf_ratio_params, 'lr': args.crf_ratio_lr},
-                   {'params': bert_params}], lr=args.bert_lr, weight_decay=args.weight_decay)
-    total_steps = int(
-        len(train_dataset) * args.epoch / (args.per_gpu_batch_size * args.gradient_accumulation_steps * args.n_gpu))
-    scheduler = get_linear_schedule_with_warmup(optim, num_warmup_steps=int(total_steps * 0.05),
-                                                num_training_steps=total_steps)
+    total_steps = max(1, (len(train_dataloader) * args.epoch) // max(args.gradient_accumulation_steps, 1))
+    num_warmup_steps = int(total_steps * args.warmup_ratio)
+    if args.scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
+    else:
+        scheduler = get_linear_schedule_with_warmup(optim, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
+
+    scaler = GradScaler(enabled=args.fp16)
 
     # training
     logger.info('Start Training')
     logger.info(args)
     logger.info('Total training batch size: {}'.format(args.per_gpu_batch_size * args.gradient_accumulation_steps * args.n_gpu))
     logger.info('Total Optimization Step: ' + str(total_steps))
-    train_sampler = RandomSampler(train_dataset)
-    train_dataloader = DataLoader(train_dataset, batch_size=args.per_gpu_batch_size * args.n_gpu, sampler=train_sampler, num_workers=4, worker_init_fn=worker_init_fn)
 
     model.to(args.device)
     if args.n_gpu > 1:
@@ -272,38 +283,48 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
     loss_func = nn.CrossEntropyLoss()
 
     for epo, _ in enumerate(train_iterator):
+        # optional encoder warmup freeze
+        def set_encoder_requires_grad(m, flag):
+            for name in ['encoder', 'bert', 'distilbert']:
+                if hasattr(m, name):
+                    for p in getattr(m, name).parameters():
+                        p.requires_grad = flag
+        set_encoder_requires_grad(model.module if hasattr(model, "module") else model, epo >= args.freeze_encoder_epochs)
         model.train()
         epoch_iterator = tqdm(train_dataloader, desc="Iteration")
         epoch_loss = 0
         for step, batch in enumerate(epoch_iterator):
             optim.zero_grad()
-
-            if args.TASK in ['seq', 'oos', 'da']:
-                input_ids = batch['input_ids'].to(args.device)
-                attention_mask = batch['attention_mask'].to(args.device)
-                labels = batch['seq_labels'].to(args.device)
-                outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-                cur_loss = outputs[0].mean()
-            elif args.TASK == 'nli':
-                s1_input_ids = batch['context']['input_ids'].to(args.device)
-                s1_attention_mask = batch['context']['attention_mask'].to(args.device)
-                s2_input_ids = batch['response']['input_ids'].to(args.device)
-                s2_attention_mask = batch['response']['attention_mask'].to(args.device)
-                labels = batch['seq_labels'].to(args.device)
-                outputs = model(s1_input_ids, s1_attention_mask, s2_input_ids, s2_attention_mask, labels=labels)
-                cur_loss = outputs[0]
-            elif args.TASK == 'rs':
-                context_input_ids = batch['context']['input_ids'].to(args.device)
-                context_attention_mask = batch['context']['attention_mask'].to(args.device)
-                response_input_ids = batch['response']['input_ids'].to(args.device)
-                response_attention_mask = batch['response']['attention_mask'].to(args.device)
-                context_output, response_output = model(context_input_ids, context_attention_mask, response_input_ids, response_attention_mask)
-                logits = torch.mm(context_output, response_output.t().contiguous())
-                batch_size = logits.shape[0]
-                labels = torch.tensor(np.arange(batch_size)).to(logits.device)
-                cur_loss = loss_func(logits, labels)
-            else:
-                raise ValueError("Please choose task from ['seq', 'oos', 'nli', 'da', 'rs']")
+            with autocast(enabled=args.fp16):
+                if args.TASK in ['seq', 'oos', 'da']:
+                    input_ids = batch['input_ids'].to(args.device)
+                    attention_mask = batch['attention_mask'].to(args.device)
+                    labels = batch['seq_labels'].to(args.device)
+                    outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                    cur_loss = outputs[0].mean()
+                elif args.TASK == 'nli':
+                    s1_input_ids = batch['context']['input_ids'].to(args.device)
+                    s1_attention_mask = batch['context']['attention_mask'].to(args.device)
+                    s2_input_ids = batch['response']['input_ids'].to(args.device)
+                    s2_attention_mask = batch['response']['attention_mask'].to(args.device)
+                    labels = batch['seq_labels'].to(args.device)
+                    outputs = model(s1_input_ids, s1_attention_mask, s2_input_ids, s2_attention_mask, labels=labels)
+                    cur_loss = outputs[0]
+                elif args.TASK == 'rs':
+                    context_input_ids = batch['context']['input_ids'].to(args.device)
+                    context_attention_mask = batch['context']['attention_mask'].to(args.device)
+                    response_input_ids = batch['response']['input_ids'].to(args.device)
+                    response_attention_mask = batch['response']['attention_mask'].to(args.device)
+                    context_output, response_output = model(context_input_ids, context_attention_mask, response_input_ids, response_attention_mask)
+                    if args.normalize_embeddings:
+                        context_output = F.normalize(context_output, p=2, dim=1)
+                        response_output = F.normalize(response_output, p=2, dim=1)
+                    logits = torch.mm(context_output, response_output.t().contiguous()) / max(args.contrastive_temperature, 1e-6)
+                    batch_size = logits.shape[0]
+                    labels = torch.tensor(np.arange(batch_size)).to(logits.device)
+                    cur_loss = loss_func(logits, labels)
+                else:
+                    raise ValueError("Please choose task from ['seq', 'oos', 'nli', 'da', 'rs']")
 
 
             # evaluation
@@ -337,11 +358,13 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
             # update parameters
             global_steps += 1
             loss = cur_loss.mean()
-            loss.backward()
+            scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                optim.step()
+                scaler.step(optim)
+                scaler.update()
                 scheduler.step()
+                model.zero_grad()
             
             epoch_loss += loss.item()
             epoch_iterator.set_description("Training Loss: {:.4f}".format(epoch_loss/(step+1)))
@@ -375,7 +398,6 @@ def train(args, model, train_dataset, val_dataset, test_dataset):
 
     
     return test_metric_with_best_valid, model_to_save
-
 
     
 
@@ -479,6 +501,29 @@ def main():
         type=str,
         help="choose from ['cls', 'average', 'cls_nopool']",
     )
+    # new optimization knobs
+    parser.add_argument(
+        "--scheduler", type=str, default="cosine", choices=["linear", "cosine"]
+    )
+    parser.add_argument(
+        "--warmup_ratio", type=float, default=0.1
+    )
+    parser.add_argument(
+        "--head_lr", type=float, default=0.00015, help="LR for classifier head"
+    )
+    parser.add_argument(
+        "--freeze_encoder_epochs", type=int, default=0, help="Freeze encoder for first K epochs"
+    )
+    parser.add_argument(
+        "--fp16", action="store_true", help="Enable mixed precision"
+    )
+    # RS knobs
+    parser.add_argument(
+        "--normalize_embeddings", action="store_true", help="L2 normalize embeddings for RS"
+    )
+    parser.add_argument(
+        "--contrastive_temperature", type=float, default=0.07
+    )
 
     # for multiturn dialogue tasks (e.g., dialogues action predication and response selection)
     parser.add_argument(
@@ -517,7 +562,6 @@ def main():
     # load data
     logger.info('Processing and loading data')
 
-    # добавила сюда свои модели
     def load_model(args, num_seq_label, weights=None, train_dataset=None):
         def get_model_class(args):
             if args.TASK in ['seq', 'oos']:
@@ -562,7 +606,11 @@ def main():
             if 'bert' in args.model_type:
                 model = MODEL_CLASS.from_pretrained(args.model_type, config=config, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
             else:
-                model = MODEL_CLASS(config=config, model_name=args.model_type, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
+                # pass pos_weight only for DA (General model accepts kwargs)
+                if args.TASK == "da":
+                    model = MODEL_CLASS(config=config, model_name=args.model_type, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method, pos_weight=args.da_pos_weight)
+                else:
+                    model = MODEL_CLASS(config=config, model_name=args.model_type, num_turn=args.num_turn, dialogue_pooling_method=args.dialogue_pooling_method)
         else:
             if 'bert' in args.model_type:
                 model = MODEL_CLASS.from_pretrained(args.model_type, config=config, weights=weights, pooling=args.classification_pooling)
@@ -582,6 +630,12 @@ def main():
             train_dataset, test_dataset, val_dataset, num_seq_label = get_dialogue_action_dataset(BERT_MODEL=args.model_type, file_path=args.data_dir, 
                                                                                                 max_seq_length=args.max_seq_length, concatenate=args.concatenate, 
                                                                                                 num_turn=args.num_turn)
+            # compute pos_weight for DA (imbalance handling)
+            with torch.no_grad():
+                y = torch.tensor(train_dataset.seq_labels, dtype=torch.float32)
+                pos = y.sum(dim=0).clamp(min=1.0)
+                neg = (y.shape[0] - pos).clamp(min=1.0)
+                args.da_pos_weight = (neg / pos)
             model = load_model(args, num_seq_label)
         elif args.TASK == "rs":
             train_dataset, test_dataset, val_dataset = get_response_selection_dataset(BERT_MODEL=args.model_type, file_path=args.data_dir, 
