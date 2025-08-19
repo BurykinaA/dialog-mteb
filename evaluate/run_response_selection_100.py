@@ -124,44 +124,39 @@ def train_inbatch(model, tokenizer, train_ctx, train_rsp, device, args):
             running += loss.item()
 
 
+# replace eval_k_to_100 to return acc1, acc3, acc10
 @torch.no_grad()
 def eval_k_to_100(model, tokenizer, te_ctx, te_rsp, device, args):
-    # Build candidate response pool from test responses
     rsp_pool = te_rsp
-    # Pre-embed all test contexts and response pool
     ctx_emb = embed_corpus(model, tokenizer, te_ctx, device, args.eval_batch_size, args.max_seq_length)
     rsp_emb = embed_corpus(model, tokenizer, rsp_pool, device, args.eval_batch_size, args.max_resp_length)
-    rsp_emb_t = rsp_emb.t().contiguous()
 
-    acc1 = 0
-    acc3 = 0
+    acc1 = acc3 = acc10 = 0
     for i in range(len(te_ctx)):
-        # sample 99 negatives from pool
         all_idx = list(range(len(rsp_pool)))
         gt = te_rsp[i]
-        # Find ground-truth index in pool; if multiple duplicates, choose one occurrence
         gt_indices = [j for j, r in enumerate(rsp_pool) if r == gt]
-        if len(gt_indices) == 0:
+        if not gt_indices:
             continue
         gt_idx = gt_indices[0]
         neg_idx = [j for j in all_idx if j != gt_idx]
-        if len(neg_idx) < 99:
-            cand_idx = neg_idx
-        else:
-            cand_idx = random.sample(neg_idx, 99)
+        cand_idx = (random.sample(neg_idx, min(99, len(neg_idx))) if len(neg_idx) >= 99 else neg_idx)
         cand_idx.append(gt_idx)
-        cand_mat = rsp_emb[cand_idx]  # [100, H]
-        # score
-        q = ctx_emb[i:i+1]  # [1, H]
+
+        cand_mat = rsp_emb[cand_idx]
+        q = ctx_emb[i:i+1]
         scores = torch.mm(q, cand_mat.t())
-        rank = torch.argsort(scores, dim=1, descending=True)[0]
-        top1 = cand_idx[rank[0].item()]
-        top3 = [cand_idx[rank[j].item()] for j in range(min(3, len(cand_idx)))]
-        acc1 += int(top1 == gt_idx)
-        acc3 += int(gt_idx in top3)
+        rank = torch.argsort(scores, dim=1, descending=True)[0].tolist()
+
+        top1 = cand_idx[rank[0]]
+        top3 = {cand_idx[r] for r in rank[:3]}
+        top10 = {cand_idx[r] for r in rank[:10]}
+        acc1  += int(top1 == gt_idx)
+        acc3  += int(gt_idx in top3)
+        acc10 += int(gt_idx in top10)
 
     n = len(te_ctx)
-    return acc1 / n, acc3 / n
+    return acc1 / n, acc3 / n, acc10 / n
 
 
 def main():
@@ -190,13 +185,11 @@ def main():
     model.to(device)
 
     train_inbatch(model, tokenizer, tr_ctx, tr_rsp, device, args)
-    acc1, acc3 = eval_k_to_100(model, tokenizer, te_ctx, te_rsp, device, args)
-
-    os.makedirs(args.output_dir, exist_ok=True)
+    acc1, acc3, acc10 = eval_k_to_100(...)
     with open(os.path.join(args.output_dir, "result.txt"), "a") as f:
-        f.write(f"1-to-100: {acc1:.4f}, 3-to-100: {acc3:.4f}\n")
+        f.write(f"Top-1: {acc1:.4f}, Top-3: {acc3:.4f}, Top-10: {acc10:.4f}\n")
     with open(os.path.join(args.output_dir, "best_result.txt"), "a") as f:
-        f.write(f"{acc1:.4f}\t{acc3:.4f}\n")
+        f.write(f"{acc1:.4f}\t{acc3:.4f}\t{acc10:.4f}\n")
 
 
 if __name__ == "__main__":
