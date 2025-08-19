@@ -12,9 +12,27 @@ set -euo pipefail
 #  - rs/dstc2/{train.txt, dev.txt, test.txt}
 
 # bash /home/coder/project/evaluate/scripts/tod_eval.sh \
-#   /home/coder/project/jasper_model_checkpoints_last/checkpoint-epoch-175 \
+#   /home/coder/project/jasper_model_checkpointS/checkpoint-epoch-45 \
 #   /home/coder/project/data/_downstream_data \
-#   /home/coder/project/down_stream/tod/metrics_jasper_175
+#   /home/coder/project/down_stream/tod/metrics_jasper_45
+
+# bash /home/coder/project/evaluate/scripts/tod_eval.sh \
+#   aws-ai/dse-bert-base \
+#   /home/coder/project/data/_downstream_data \
+#   /home/coder/project/down_stream/tod/metrics_dse
+
+
+# bash /home/coder/project/evaluate/scripts/tod_eval.sh \
+#   TODBERT/TOD-BERT-MLM-V1 \
+#   /home/coder/project/data/_downstream_data \
+#   /home/coder/project/down_stream/tod/metrics_tod_bert
+
+# bash /home/coder/project/evaluate/scripts/tod_eval.sh \
+#   google-bert/bert-base-uncased \
+#   /home/coder/project/data/_downstream_data \
+#   /home/coder/project/down_stream/tod/metrics_bert
+
+
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TOKENIZERS_PARALLELISM=false
@@ -55,7 +73,7 @@ for shots in "${shots_to_run[@]}"; do
     --TASK oos \
     --output_dir "${OUT_DIR}/oos/${RUN_ID}/${tag}" \
     --bert_lr 3e-5 \
-    --epoch 200 \
+    --epoch 400 \
     --max_seq_length 64 \
     --per_gpu_batch_size 256 \
     --gradient_accumulation_steps 1 \
@@ -78,7 +96,7 @@ for pct in 1 5 10 25 -1; do
     --model_type "${MODEL_DIR}" \
     --output_dir "${OUT_DIR}/dst/${RUN_ID}/mwoz21/${tag}" \
     --bert_lr 3e-5 \
-    --epoch 30 \
+    --epoch 100 \
     --max_seq_length 256 \
     --per_gpu_batch_size 64 \
     --eval_steps 200 \
@@ -99,7 +117,7 @@ for dataset in mwoz dstc2; do
       --model_type "${MODEL_DIR}" \
       --output_dir "${OUT_DIR}/da/${RUN_ID}/${dataset}/${tag}" \
       --bert_lr 5e-5 \
-      --epoch 30 \
+      --epoch 100 \
       --max_seq_length 128 \
       --per_gpu_batch_size 128 \
       --eval_steps 200 \
@@ -121,7 +139,7 @@ for dataset in mwoz dstc2; do
       --model_type "${MODEL_DIR}" \
       --output_dir "${OUT_DIR}/rs/${RUN_ID}/${dataset}/${tag}" \
       --bert_lr 2e-5 \
-      --epoch 5 \
+      --epoch 50 \
       --max_seq_length 128 \
       --max_resp_length 32 \
       --per_gpu_batch_size 256 \
