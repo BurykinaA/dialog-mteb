@@ -11,10 +11,10 @@ set -euo pipefail
 #  - rs/mwoz/{train.txt, dev.txt, test.txt}
 #  - rs/dstc2/{train.txt, dev.txt, test.txt}
 
-# bash /Users/alina_burykina/git_repos/dialog-mteb/evaluate/scripts/tod_eval.sh \
-#   /abs/path/to/your_model_checkpoint_or_hf_name \
-#   /abs/path/to/data_root \
-#   /abs/path/to/output_root
+# bash /home/coder/project/evaluate/scripts/tod_eval.sh \
+#   /home/coder/project/jasper_model_checkpoints_last/checkpoint-epoch-175 \
+#   /home/coder/project/data/_downstream_data \
+#   /home/coder/project/down_stream/tod/metrics_jasper_175
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TOKENIZERS_PARALLELISM=false
@@ -31,20 +31,33 @@ echo "Out: ${OUT_DIR}"
 mkdir -p "${OUT_DIR}"
 
 # ---------------------------
-# 1) Intent recognition (OOS) — Acc(all), Acc(in), Acc(out), Recall(out)
-#    Few-shot: 1-shot, 10-shot; Full: -1 (full)
+# 1) Intent recognition (OOS on CLINC150_ALL)
+#    Few-shot: detect 1- and 5-shot if present; always run full otherwise
 # ---------------------------
-for shots in 1 10 -1; do
+base_dir="${DATA_DIR}/intent/clinc150_all"
+if [ ! -f "${base_dir}/seq_test.txt" ]; then
+  echo "ERROR: CLINC150_ALL not found at ${base_dir}/seq_test.txt"; exit 1;
+fi
+
+shots_to_run=("-1") # full
+if [ -d "${base_dir}/1/0" ] && [ -f "${base_dir}/1/0/seq_train.txt" ]; then
+  shots_to_run=("1" "${shots_to_run[@]}")
+fi
+if [ -d "${base_dir}/5/0" ] && [ -f "${base_dir}/5/0/seq_train.txt" ]; then
+  shots_to_run=("5" "${shots_to_run[@]}")
+fi
+
+for shots in "${shots_to_run[@]}"; do
   tag="full"; [ "$shots" != "-1" ] && tag="${shots}-shot"
   python evaluate/run_finetune.py \
-    --data_dir "${DATA_DIR}/intent/oos" \
+    --data_dir "${base_dir}" \
     --model_type "${MODEL_DIR}" \
     --TASK oos \
     --output_dir "${OUT_DIR}/oos/${RUN_ID}/${tag}" \
     --bert_lr 3e-5 \
     --epoch 200 \
     --max_seq_length 64 \
-    --per_gpu_batch_size 16 \
+    --per_gpu_batch_size 256 \
     --gradient_accumulation_steps 1 \
     --data_ratio "${shots}" \
     --num_runs 1 \
@@ -60,14 +73,14 @@ done
 # ---------------------------
 for pct in 1 5 10 25 -1; do
   tag="full"; [ "$pct" != "-1" ] && tag="${pct}pct"
-  python evaluate/run_dst_mwoz.py \
+    python evaluate/run_dst_mwoz.py \
     --data_dir "${DATA_DIR}/dst/mwoz21" \
     --model_type "${MODEL_DIR}" \
     --output_dir "${OUT_DIR}/dst/${RUN_ID}/mwoz21/${tag}" \
     --bert_lr 3e-5 \
     --epoch 30 \
     --max_seq_length 256 \
-    --per_gpu_batch_size 16 \
+    --per_gpu_batch_size 64 \
     --eval_steps 200 \
     --patience 5 \
     --data_ratio "${pct}"
@@ -88,7 +101,7 @@ for dataset in mwoz dstc2; do
       --bert_lr 5e-5 \
       --epoch 30 \
       --max_seq_length 128 \
-      --per_gpu_batch_size 16 \
+      --per_gpu_batch_size 128 \
       --eval_steps 200 \
       --patience 5 \
       --data_ratio "${pct}"
@@ -111,7 +124,8 @@ for dataset in mwoz dstc2; do
       --epoch 5 \
       --max_seq_length 128 \
       --max_resp_length 32 \
-      --per_gpu_batch_size 32 \
+      --per_gpu_batch_size 256 \
+      --eval_batch_size 1024 \
       --data_ratio "${pct}"
   done
 done
