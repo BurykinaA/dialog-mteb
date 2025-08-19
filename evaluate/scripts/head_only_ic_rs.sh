@@ -10,9 +10,17 @@ set -euo pipefail
 
 
 # bash evaluate/scripts/head_only_ic_rs.sh \
-#   bert-base-uncased \
+#   AndrewZeng/futuretod-base-v1.0 \
 #   /home/coder/project/data/_downstream_data \
-#   /home/coder/project/down_stream/head_only_metrics
+#   /home/coder/project/down_stream_head/metrics_futuretod
+
+
+
+# bash evaluate/scripts/head_only_ic_rs.sh \
+#   /home/coder/project/jasper_model_checkpointS/checkpoint-epoch-45 \
+#   /home/coder/project/data/_downstream_data \
+#   /home/coder/project/down_stream_head/metrics_jasper_45
+
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TOKENIZERS_PARALLELISM=false
