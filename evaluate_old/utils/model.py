@@ -123,27 +123,22 @@ class GeneralModelForSequenceClassification(PreTrainedModel):
         if self.model_name != "jxm/cde-small-v1":
             if self.pooling == "average":
                 attention_mask = attention_mask.unsqueeze(-1)
-                pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+                denom = torch.clamp(torch.sum(attention_mask, dim=1), min=1.0)
+                pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / denom
             elif self.pooling == "cls_nopool":
                 pooled_output = outputs[0][:, 0, :]
             elif self.pooling == "cls":
                 pooled_output = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
             else:
                 raise ValueError("Choose args.pooling from ['cls', 'cls_nopool', 'average']")
-
             pooled_output = self.dropout(pooled_output)
             pooled_output = pooled_output.to(torch.float32)
-        # print(pooled_output.shape)
         seq_logits = self.classifier(pooled_output)
-
-        # print(outputs)
-
         outputs = (seq_logits,) + outputs[2:] 
         if labels is not None:
-            seq_loss_fct = nn.CrossEntropyLoss().cuda()
+            seq_loss_fct = nn.CrossEntropyLoss()
             loss = seq_loss_fct(seq_logits, labels)
             outputs = (loss,) + outputs
-
         return outputs
 
 
@@ -285,7 +280,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
         if self.pooling == "average":
             attention_mask = attention_mask.unsqueeze(-1)
-            pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / torch.sum(attention_mask, dim=1)
+            denom = torch.clamp(torch.sum(attention_mask, dim=1), min=1.0)
+            pooled_output = torch.sum(outputs[0]*attention_mask, dim=1) / denom
         elif self.pooling == "cls_nopool":
             pooled_output = outputs[0][:, 0, :]
         elif self.pooling == "cls":
@@ -298,10 +294,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
         outputs = (seq_logits,) + outputs[2:]  # add hidden states and attention if they are here
         if labels is not None:
-            # calculate sequence classification loss
-            seq_loss_fct = nn.CrossEntropyLoss().cuda()
+            seq_loss_fct = nn.CrossEntropyLoss()
             loss = seq_loss_fct(seq_logits, labels)
-
             outputs = (loss,) + outputs
 
         return outputs

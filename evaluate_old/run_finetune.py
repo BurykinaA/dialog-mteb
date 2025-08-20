@@ -62,10 +62,9 @@ def evaluate(test_dataset, model, args, prefix="Test"):
     eval_batch_size = args.per_gpu_batch_size * args.n_gpu * 3 if args.TASK != 'rs' else 100
     test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, sampler=test_sampler)
 
-
     if not isinstance(model, torch.nn.DataParallel):
         model = torch.nn.DataParallel(model)
-
+    model = model.to(args.device)
     model.eval()
     test_iterator = tqdm(test_dataloader, desc="Iteration") if len(test_dataloader)>100 else test_dataloader
     seq_correct = 0
@@ -89,13 +88,10 @@ def evaluate(test_dataset, model, args, prefix="Test"):
             if args.TASK == 'seq':
                 input_ids = batch['input_ids'].to(args.device)
                 attention_mask = batch['attention_mask'].to(args.device)
-                seq_labels = batch['seq_labels']
+                seq_labels = batch['seq_labels'].to(args.device)
                 outputs = model(input_ids, attention_mask=attention_mask, labels=seq_labels)
-
-                # for seq
                 seq_pred = outputs[1].argmax(dim=1, keepdim=True).cpu().squeeze(1)
                 seq_correct += sum(seq_pred==seq_labels.cpu()).item()
-
                 loss += torch.mean(outputs[0]).item()
             
             elif args.TASK == 'nli':
@@ -114,27 +110,23 @@ def evaluate(test_dataset, model, args, prefix="Test"):
             elif args.TASK == 'oos':
                 input_ids = batch['input_ids'].to(args.device)
                 attention_mask = batch['attention_mask'].to(args.device)
-                seq_labels = batch['seq_labels']
+                seq_labels = batch['seq_labels'].to(args.device)
                 outputs = model(input_ids, attention_mask=attention_mask, labels=seq_labels)
                 seq_pred = outputs[1].argmax(dim=1, keepdim=True).cpu().squeeze(1)
-
                 all_seq_labels = torch.cat([all_seq_labels, seq_labels.cpu()])
                 all_seq_preds = torch.cat([all_seq_preds, seq_pred])
-                
                 loss += torch.mean(outputs[0]).item()
             
 
             elif args.TASK == 'da':
                 input_ids = batch['input_ids'].to(args.device)
                 attention_mask = batch['attention_mask'].to(args.device)
-                seq_labels = batch['seq_labels']
+                seq_labels = batch['seq_labels'].to(args.device)
                 outputs = model(input_ids, attention_mask=attention_mask, labels=seq_labels)
                 seq_pred = outputs[1].cpu()
                 seq_pred = (seq_pred > 0.5).long()
-
                 all_seq_labels = torch.cat([all_seq_labels, seq_labels.cpu()])
                 all_seq_preds = torch.cat([all_seq_preds, seq_pred])
-
                 loss += torch.mean(outputs[0]).item()
             
 
